@@ -1,4 +1,4 @@
-// Generated shader code - DO NOT EDIT
+/** THIS FILE IS AUTO-GENERATED SHADER CODE. DO NOT MODIFY. */
 
 const ADD_SHADER_CODE = `
 const VECTOR_SIZE : u32 = 4u;

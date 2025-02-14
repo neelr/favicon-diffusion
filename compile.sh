@@ -4,7 +4,7 @@
 SHADER_DIR="shaders"
 
 # Create or truncate the output file in the shader directory
-echo "// Generated shader code - DO NOT EDIT" > "$SHADER_DIR/shaders.js"
+echo "/** THIS FILE IS AUTO-GENERATED SHADER CODE. DO NOT MODIFY. */" > "$SHADER_DIR/shaders.js"
 echo "" >> "$SHADER_DIR/shaders.js"
 
 # Process each .wgsl file in the shader directory
