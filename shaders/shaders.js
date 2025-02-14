@@ -513,7 +513,7 @@ fn main(@builtin(global_invocation_id) globalID: vec3<u32>) {
   }
 }`;
 
-const GELU_SHADER_CODE = `struct Uniforms {
+const SILU_SHADER_CODE = `struct Uniforms {
   totalElements : u32,
 };
 
@@ -533,8 +533,8 @@ fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
   }
   let a : f32 = input[idx];
   
-  // Fast GELU approximation.
-  output[idx] = a * sigmoid(1.702 * a);
+  // SiLU activation: x * sigmoid(x)
+  output[idx] = a * sigmoid(a);
 }`;
 
 const ELEMENT_WISE_ADD_SHADER_CODE = (n) => `

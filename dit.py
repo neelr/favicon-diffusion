@@ -6,9 +6,12 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Optional
 
+LOG = False
+
 
 def log_tens(t, label=""):
-    return
+    if not LOG:
+        return
     print(label)
     print(f"flattened length: {t.flatten().shape}")
     print(f"shape: {t.shape}")
@@ -100,6 +103,9 @@ class AdaLN(nn.Module):
         scale = 1 + self.scale_proj(time_emb).unsqueeze(1)
         shift = self.shift_proj(time_emb).unsqueeze(1)
 
+        log_tens(scale, "scale")
+        log_tens(shift, "shift")
+
         return norm_x * scale + shift
 
 
@@ -136,13 +142,13 @@ class Attention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    """MLP with GeLU activation"""
+    """MLP with SiLU activation"""
 
     def __init__(self, dim, mult=4):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(dim, dim * mult, bias=False),
-            nn.GELU(),
+            nn.SiLU(),
             nn.Linear(dim * mult, dim, bias=False)
         )
 
@@ -161,7 +167,6 @@ class TransformerBlock(nn.Module):
         self.norm2 = AdaLN(dim, time_emb_dim)
 
     def forward(self, x, time_emb):
-        log_tens(self.norm1(x, time_emb), "BLOCK start norm(x)")
         x = x + self.attn(self.norm1(x, time_emb))
         x = x + self.ff(self.norm2(x, time_emb))
         return x
@@ -197,7 +202,7 @@ class DiT(nn.Module):
         self.time_mlp = nn.Sequential(
             SinusoidalPosEmb(config.dim // 2),
             nn.Linear(config.dim // 2, config.time_emb_dim, bias=False),
-            nn.GELU(),
+            nn.SiLU(),
             nn.Linear(config.time_emb_dim, config.time_emb_dim, bias=False)
         )
 

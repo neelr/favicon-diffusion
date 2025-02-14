@@ -2,6 +2,7 @@
 // Utility: create a GPU buffer from an array.
 async function logBuffer(device, buffer, label = "Buffer stats (first 300)") {
   return;
+  //  return;
   // Create a staging buffer for reading
   const stagingBuffer = device.createBuffer({
     size: buffer.size,
@@ -692,33 +693,33 @@ class GPUFeedForward {
     this.device = device;
     this.dim = dim;
     this.mult = mult;
-    this.geluPipeline = null;
+    this.siluPipeline = null;
     // Linear layer 1: expand dimension from dim to dim*mult.
     this.linear1 = new GPULinear(device, dim, dim * mult);
     // Linear layer 2: project from dim*mult back to dim.
     this.linear2 = new GPULinear(device, dim * mult, dim);
   }
 
-  async createGeluPipeline() {
-    if (!this.geluPipeline) {
-      // Create the WGSL module and pipeline for GeLU.
-      this.geluModule = this.device.createShaderModule({
-        code: GELU_SHADER_CODE,
+  async createSiluPipeline() {
+    if (!this.siluPipeline) {
+      // Create the WGSL module and pipeline for SiLU.
+      this.siluModule = this.device.createShaderModule({
+        code: SILU_SHADER_CODE,
       });
-      this.geluPipeline = this.device.createComputePipeline({
+      this.siluPipeline = this.device.createComputePipeline({
         layout: "auto",
         compute: {
-          module: this.geluModule,
+          module: this.siluModule,
           entryPoint: "main",
         },
       });
     }
   }
 
-  // Helper: apply the GeLU activation on an input buffer.
+  // Helper: apply the Silu activation on an input buffer.
   // numElements is the total number of float elements to process.
-  async applyGelu(inputBuffer, numElements) {
-    await this.createGeluPipeline();
+  async applySilu(inputBuffer, numElements) {
+    await this.createSiluPipeline();
     // Allocate an output buffer (same size as input).
     const outputBuffer = this.device.createBuffer({
       size: numElements * 4, // each f32 takes 4 bytes.
@@ -731,9 +732,9 @@ class GPUFeedForward {
       uniformArray,
       GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST
     );
-    // Create a bind group for the GeLU shader.
+    // Create a bind group for the Silu shader.
     const bindGroup = this.device.createBindGroup({
-      layout: this.geluPipeline.getBindGroupLayout(0),
+      layout: this.siluPipeline.getBindGroupLayout(0),
       entries: [
         { binding: 0, resource: { buffer: inputBuffer } },
         { binding: 1, resource: { buffer: outputBuffer } },
@@ -743,7 +744,7 @@ class GPUFeedForward {
     // Launch the compute pass (using workgroup size 64).
     const commandEncoder = this.device.createCommandEncoder();
     const pass = commandEncoder.beginComputePass();
-    pass.setPipeline(this.geluPipeline);
+    pass.setPipeline(this.siluPipeline);
     pass.setBindGroup(0, bindGroup);
     const workgroupCount = Math.ceil(numElements / 64);
     pass.dispatchWorkgroups(workgroupCount);
@@ -756,8 +757,8 @@ class GPUFeedForward {
 
   // The forward pass now includes three steps:
   // 1. Compute hidden activations: linear1(x)
-  // 2. Apply GeLU activation elementwise on the result.
-  // 3. Compute output: linear2(GeLU(linear1(x)))
+  // 2. Apply SiLU activation elementwise on the result.
+  // 3. Compute output: linear2(SiLU(linear1(x)))
   async forward(xBuffer, batchTimesSeq) {
     // xBuffer is assumed to have shape: [batchTimesSeq, dim].
     // linear1 transforms from [batchTimesSeq, dim] to [batchTimesSeq, dim*mult]
@@ -769,8 +770,8 @@ class GPUFeedForward {
 
     logBuffer(this.device, hidden, "Hidden buffer stats");
     const numHiddenElements = batchTimesSeq * (this.dim * this.mult);
-    // Apply GeLU activation elementwise.
-    const activatedHidden = await this.applyGelu(hidden, numHiddenElements);
+    // Apply SiLU activation elementwise.
+    const activatedHidden = await this.applySilu(hidden, numHiddenElements);
     logBuffer(this.device, activatedHidden, "Activated hidden buffer stats");
     // linear2 transforms from [batchTimesSeq, dim*mult] back to [batchTimesSeq, dim].
     const output = await this.linear2.forward(activatedHidden, [
@@ -1015,9 +1016,9 @@ class GPUDiT {
       1,
       Math.floor(this.dim / 2),
     ]);
-    const t1GeLU = await this.blocks[0].ff.applyGelu(t1, this.timeEmbDim);
+    const t1Silu = await this.blocks[0].ff.applySilu(t1, this.timeEmbDim);
 
-    const tEmbedding = await this.timeMLP2.forward(t1GeLU, [
+    const tEmbedding = await this.timeMLP2.forward(t1Silu, [
       1,
       this.timeEmbDim,
     ]);
