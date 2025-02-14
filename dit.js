@@ -1,4 +1,7 @@
 /* dit_webgpu.js */
+const ELEMENT_WISE_ADD_SHADER_CODE = (numElements) =>
+  ADD_SHADER_CODE.replace(/_NUM_ELEMENTS_/g, numElements);
+
 // GPUPatchify class
 class GPUPatchify {
   constructor(device) {
@@ -161,7 +164,7 @@ class GPUMatrixMultiply {
   async createPipeline() {
     if (!this.pipeline) {
       const shaderModule = this.device.createShaderModule({
-        code: MM_SHADER_CODE,
+        code: MATMUL_SHADER_CODE,
       });
 
       this.pipeline = this.device.createComputePipeline({
@@ -273,7 +276,7 @@ class GPUAdaLN {
   async createPipeline() {
     if (!this.pipeline) {
       this.adaLNModule = this.device.createShaderModule({
-        code: ADALN_SHADER_CODE,
+        code: LAYERNORM_SHADER_CODE,
       });
       this.pipeline = this.device.createComputePipeline({
         layout: "auto",
@@ -366,7 +369,7 @@ class GPUAttention {
   async createSoftmaxPipeline() {
     if (!this.softmaxPipeline) {
       this.softmaxModule = this.device.createShaderModule({
-        code: SOFTMAX_WGSL,
+        code: SOFTMAX_SHADER_CODE,
       });
       this.softmaxPipeline = this.device.createComputePipeline({
         layout: "auto",
@@ -378,7 +381,7 @@ class GPUAttention {
   async createBatchedMatMulPipeline() {
     if (!this.batchedMatMulPipeline) {
       this.batchedMatMulModule = this.device.createShaderModule({
-        code: BATCHED_MAT_MUL_WGSL,
+        code: BATCHED_MATMUL_SHADER_CODE,
       });
       this.batchedMatMulPipeline = this.device.createComputePipeline({
         layout: "auto",
@@ -390,7 +393,7 @@ class GPUAttention {
   async createScaleMatrixPipeline() {
     if (!this.scaleMatrixPipeline) {
       this.scaleMatrixModule = this.device.createShaderModule({
-        code: SCALE_MATRIX_WGSL,
+        code: SCALE_SHADER_CODE,
       });
       this.scaleMatrixPipeline = this.device.createComputePipeline({
         layout: "auto",

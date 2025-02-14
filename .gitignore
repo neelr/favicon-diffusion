@@ -5,3 +5,4 @@ biases
 data
 wandb
 matrices.json
+.vercelignore
