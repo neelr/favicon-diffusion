@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GPUDiT All 1’s Through Network Demo</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 2rem;
+      }
+      textarea {
+        width: 90%;
+        height: 200px;
+        margin: 1rem 0;
+        font-family: monospace;
+        font-size: 12px;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+      }
+      #status {
+        margin-top: 1rem;
+        white-space: pre-line;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>GPUDiT All 1’s Through Network Demo</h1>
+    <p>
+      This demo passes an input array of all 1’s (and a time value of 1 so that
+      the time embedding is also based on 1’s) through the GPUDiT network. The
+      network’s output is printed in the textbox below.
+    </p>
+    <button id="runNetworkButton">Run Network</button>
+    <div id="status">Status:</div>
+    <h3>Network Output</h3>
+    <textarea id="outputText" readonly></textarea>
+
+    <!-- Include the necessary shader and GPUDiT scripts -->
+    <script src="shaders/shaders.js"></script>
+    <script src="dit.clean.js"></script>
+
+    <script>
+      (async () => {
+        if (!navigator.gpu) {
+          console.error(
+            "WebGPU not supported in this browser. Use one with WebGPU enabled."
+          );
+          document.getElementById("status").innerText = "WebGPU not supported.";
+          return;
+        }
+        // Request WebGPU adapter and device.
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+
+        // Model configuration (must match training settings).
+        const config = {
+          inputSize: 64,
+          patchSize: 8,
+          inChannels: 3,
+          dim: 512,
+          depth: 4,
+          dimHead: 128,
+          mlpMult: 4,
+          timeEmbDim: 128,
+        };
+
+        const statusDiv = document.getElementById("status");
+        const outputText = document.getElementById("outputText");
+        const runNetworkButton = document.getElementById("runNetworkButton");
+
+        // Create the GPUDiT model and load its weights.
+        const model = new GPUDiT(device, config);
+        statusDiv.innerText = "Loading weights...";
+        await model.loadWeights("matrices.json");
+        await device.queue.onSubmittedWorkDone();
+        statusDiv.innerText = "Weights loaded. Ready to run network.";
+
+        // Calculate the total number of elements in the image.
+        const numImageElements =
+          config.inChannels * config.inputSize * config.inputSize;
+        // Build an input array filled with 1’s.
+        const onesArray = new Float32Array(numImageElements);
+        onesArray.fill(1.0);
+
+        // Utility function: Compute basic statistics (mean, std, min, max) over a Float32Array.
+        function computeStats(data) {
+          let sum = 0,
+            sumSq = 0;
+          let minVal = Infinity;
+          let maxVal = -Infinity;
+          for (let i = 0; i < data.length; i++) {
+            const val = data[i];
+            sum += val;
+            sumSq += val * val;
+            if (val < minVal) minVal = val;
+            if (val > maxVal) maxVal = val;
+          }
+          const mean = sum / data.length;
+          const variance = sumSq / data.length - mean * mean;
+          let std = Math.sqrt(variance);
+          return { mean, std, minVal, maxVal };
+        }
+
+        // runNetwork: runs the network with the all-1’s input.
+        async function runNetwork() {
+          statusDiv.innerText = "Running network...";
+          // For the time embedding, we pass a scalar time value of 1.
+          const tVal = 1;
+
+          // Call the model forward function with the ones array and time value.
+          const outputBuffer = await model.forward(onesArray, tVal);
+          const expectedByteSize = onesArray.byteLength;
+          // Create a staging buffer to read the output.
+          const stagingBuffer = device.createBuffer({
+            size: expectedByteSize,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+          });
+          const commandEncoder = device.createCommandEncoder();
+          commandEncoder.copyBufferToBuffer(
+            outputBuffer, // source buffer
+            0, // source offset
+            stagingBuffer, // destination buffer
+            0, // destination offset
+            expectedByteSize // number of bytes to copy
+          );
+          device.queue.submit([commandEncoder.finish()]);
+
+          await device.queue.onSubmittedWorkDone();
+          // Map the staging buffer for read access.
+          await stagingBuffer.mapAsync(GPUMapMode.READ);
+          const arrayBuffer = stagingBuffer.getMappedRange();
+          const outputArray = new Float32Array(arrayBuffer.slice(0));
+          stagingBuffer.unmap();
+
+          // Print the output values in the textbox.
+          outputText.value = outputArray.join(", ");
+
+          // Compute and display some statistics about the output.
+          const stats = computeStats(outputArray);
+          statusDiv.innerText =
+            "Network run complete.\n" +
+            "Output stats -- Mean: " +
+            stats.mean.toFixed(3) +
+            ", Std: " +
+            stats.std.toFixed(3) +
+            ", Min: " +
+            stats.minVal.toFixed(3) +
+            ", Max: " +
+            stats.maxVal.toFixed(3);
+        }
+
+        // Bind the runNetwork function to the button click.
+        runNetworkButton.addEventListener("click", runNetwork);
+      })();
+    </script>
+  </body>
+</html>

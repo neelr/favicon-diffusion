@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>DiT Diffusion Sampling – Robust JS Version</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 2rem;
+        background: #f8f8f8;
+      }
+      canvas {
+        border: 1px solid #ccc;
+        image-rendering: pixelated;
+        display: block;
+        width: 256px;
+        height: 256px;
+        margin: 0 auto;
+      }
+      #status {
+        text-align: center;
+        margin-top: 1rem;
+        font-family: monospace;
+      }
+    </style>
+    <script src="shaders/shaders.js"></script>
+    <script src="dit.clean.js"></script>
+  </head>
+  <body>
+    <h1 style="text-align: center">
+      DiT Diffusion Sampling – Robust JS Version
+    </h1>
+    <!-- Our display canvas -->
+    <canvas id="displayCanvas"></canvas>
+    <div id="status"></div>
+
+    <script>
+      // ----- Utility Functions -----
+      // Safe square root: ensure we never take sqrt of a negative number.
+      function safeSqrt(x, eps = 1e-8) {
+        return Math.sqrt(Math.max(x, eps));
+      }
+
+      // Generate standard Gaussian random number (Box–Muller).
+      function gaussianRandom() {
+        let u = 0,
+          v = 0;
+        while (u === 0) u = Math.random();
+        while (v === 0) v = Math.random();
+        return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+      }
+
+      // Compute the cosine schedule (exactly as in the Python code).
+      function getCosineSchedule(T, s = 1e-4) {
+        // Compute T+1 values as in the Python version.
+        const f = new Float32Array(T + 1);
+        for (let t = 0; t <= T; t++) {
+          // Use s = 1e-4 instead of 0.008.
+          const angle = ((t / T + s) / (1 + s)) * (Math.PI / 2);
+          f[t] = Math.cos(angle) ** 2;
+        }
+        // Normalize f so that f[0] is exactly 1.
+        const f0 = f[0];
+        for (let t = 0; t <= T; t++) {
+          f[t] /= f0;
+        }
+        // Compute betas for t=0…T-1 from the ratio of consecutive f values.
+        const betas = new Float32Array(T);
+        for (let t = 0; t < T; t++) {
+          betas[t] = 1 - f[t + 1] / f[t];
+          // Clamp betas as in the Python code.
+          if (betas[t] < 0) betas[t] = 0;
+          if (betas[t] > 0.999) betas[t] = 0.999;
+        }
+        // Compute alphas and their cumulative product (alphaBars).
+        const alphas = new Float32Array(T);
+        for (let t = 0; t < T; t++) {
+          alphas[t] = 1 - betas[t];
+        }
+        const alphaBars = new Float32Array(T);
+        alphaBars[0] = alphas[0];
+        for (let t = 1; t < T; t++) {
+          alphaBars[t] = alphaBars[t - 1] * alphas[t];
+        }
+        return { betas, alphas, alphaBars };
+      }
+
+      // Draw an image from a flat (Float32Array) pixel array.
+      // If 'normalized' is true then we assume values are in [0,1]; otherwise, we assume range ≈[-1,1].
+      function drawImageFromArray(
+        data,
+        width,
+        height,
+        ctx,
+        normalized = false
+      ) {
+        const imageData = ctx.createImageData(width, height);
+        const numPixels = width * height;
+        for (let i = 0; i < numPixels; i++) {
+          let r, g, b;
+          if (normalized) {
+            r = Math.floor(data[i * 3] * 255);
+            g = Math.floor(data[i * 3 + 1] * 255);
+            b = Math.floor(data[i * 3 + 2] * 255);
+          } else {
+            r = Math.floor(((data[i * 3] + 1) / 2) * 255);
+            g = Math.floor(((data[i * 3 + 1] + 1) / 2) * 255);
+            b = Math.floor(((data[i * 3 + 2] + 1) / 2) * 255);
+          }
+          imageData.data[i * 4] = Math.min(255, Math.max(0, r));
+          imageData.data[i * 4 + 1] = Math.min(255, Math.max(0, g));
+          imageData.data[i * 4 + 2] = Math.min(255, Math.max(0, b));
+          imageData.data[i * 4 + 3] = 255;
+        }
+        ctx.putImageData(imageData, 0, 0);
+      }
+
+      // Normalize a Float32Array via min–max scaling to [0,1].
+      function normalizeArray(arr) {
+        let minVal = Infinity,
+          maxVal = -Infinity;
+        for (let i = 0; i < arr.length; i++) {
+          if (arr[i] < minVal) minVal = arr[i];
+          if (arr[i] > maxVal) maxVal = arr[i];
+        }
+        const range = maxVal - minVal < 1e-8 ? 1 : maxVal - minVal;
+        const norm = new Float32Array(arr.length);
+        for (let i = 0; i < arr.length; i++) {
+          norm[i] = (arr[i] - minVal) / range;
+        }
+        return norm;
+      }
+
+      // ----- Main Diffusion Code -----
+      (async () => {
+        const statusDiv = document.getElementById("status");
+        // Check for WebGPU support.
+        if (!navigator.gpu) {
+          statusDiv.textContent = "WebGPU is not supported in your browser.";
+          return;
+        }
+
+        statusDiv.textContent = "Initializing WebGPU...";
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+
+        // Model configuration (should match the Python DiT configuration).
+        const config = {
+          inputSize: 64,
+          patchSize: 8,
+          inChannels: 3,
+          dim: 512,
+          depth: 4,
+          dimHead: 128,
+          mlpMult: 4,
+          timeEmbDim: 128,
+        };
+
+        // Set up canvas.
+        const canvas = document.getElementById("displayCanvas");
+        canvas.width = config.inputSize;
+        canvas.height = config.inputSize;
+        const ctx = canvas.getContext("2d");
+
+        // Instantiate and load the model.
+        statusDiv.textContent = "Loading DiT model weights...";
+        const model = new GPUDiT(device, config);
+        await model.loadWeights("matrices.json");
+        await device.queue.onSubmittedWorkDone();
+        statusDiv.textContent = "Model loaded. Starting diffusion sampling...";
+
+        // Build the diffusion schedule (must be the same as in training).
+        const T = 32; // number of timesteps
+        const { betas, alphas, alphaBars } = getCosineSchedule(T);
+
+        // Number of elements in a single image (C x H x W)
+        const numElements =
+          config.inChannels * config.inputSize * config.inputSize;
+
+        // Start from pure Gaussian noise.
+        let x = new Float32Array(numElements);
+        for (let i = 0; i < numElements; i++) {
+          x[i] = gaussianRandom();
+        }
+
+        // Define predictNoise: given current image array and timestep t,
+        // the model returns a predicted noise array.
+        async function predictNoise(inputArray, tVal) {
+          // We assume model.forward takes a flat Float32Array and a timestep (integer)
+          // and returns a GPUBuffer containing a Float32Array of the same size.
+          const outputBuffer = await model.forward(inputArray, tVal);
+          const byteSize = inputArray.length * 4;
+          const stagingBuffer = device.createBuffer({
+            size: byteSize,
+            usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+          });
+          const commandEncoder = device.createCommandEncoder();
+          commandEncoder.copyBufferToBuffer(
+            outputBuffer,
+            0,
+            stagingBuffer,
+            0,
+            byteSize
+          );
+          device.queue.submit([commandEncoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+          await stagingBuffer.mapAsync(GPUMapMode.READ);
+          const arrayBuffer = stagingBuffer.getMappedRange();
+          const resultArray = new Float32Array(arrayBuffer.slice(0));
+          stagingBuffer.unmap();
+          return resultArray;
+        }
+
+        // --- Asynchronous Display Update ---
+        // We record the start time and update the display on every iteration
+        // without blocking the reverse diffusion loop.
+        const startTime = performance.now();
+        function updateAndDisplay(currentArray, currentT) {
+          const now = performance.now();
+          const elapsed = (now - startTime) / 1000; // seconds elapsed
+          const iterationsDone = T - currentT;
+          const iterPerSec = elapsed > 0 ? iterationsDone / elapsed : 0;
+          statusDiv.textContent =
+            "Diffusion timestep t = " +
+            currentT +
+            " | Iteration: " +
+            iterationsDone +
+            " | " +
+            iterPerSec.toFixed(2) +
+            " iterations/sec | Total Time: " +
+            elapsed.toFixed(2) +
+            " s";
+          // Asynchronously update the canvas (this does not block the model).
+          requestAnimationFrame(() => {
+            drawImageFromArray(
+              currentArray,
+              config.inputSize,
+              config.inputSize,
+              ctx,
+              false
+            );
+          });
+        }
+
+        // Reverse diffusion main loop.
+        for (let t = T - 1; t >= 0; t--) {
+          const alpha_t = alphas[t];
+          const beta_t = betas[t];
+          const alpha_bar_t = alphaBars[t];
+
+          // Use safe square root to avoid instabilities.
+          const sqrt_alpha_t = safeSqrt(alpha_t);
+          const sqrt_one_minus_alpha_bar = safeSqrt(1 - alpha_bar_t);
+
+          // Get predicted noise εθ = model(x, t)
+          let eps_theta = await predictNoise(x, t);
+          // Replace any NaN with 0.
+          for (let i = 0; i < eps_theta.length; i++) {
+            if (isNaN(eps_theta[i])) {
+              eps_theta[i] = 0;
+              console.warn(
+                "NaN detected in predicted noise; replacing with zero."
+              );
+            }
+          }
+
+          // Compute the reverse-diffusion update.
+          const new_x = new Float32Array(numElements);
+          for (let i = 0; i < numElements; i++) {
+            // Use beta_t (not 1 - alpha_t) when computing the reverse update.
+            const mean =
+              (1 / sqrt_alpha_t) *
+              (x[i] - (beta_t / sqrt_one_minus_alpha_bar) * eps_theta[i]);
+            new_x[i] =
+              t > 0 ? mean + safeSqrt(beta_t) * gaussianRandom() : mean;
+          }
+          x = new_x;
+
+          // Update the display asynchronously every iteration.
+          updateAndDisplay(x, t);
+          // Note: No delay is inserted here, so diffusion sampling isn’t interrupted.
+        }
+
+        // After sampling, perform a final min–max normalization.
+
+        const totalElapsed = (performance.now() - startTime) / 1000;
+        statusDiv.textContent =
+          "Sampling complete. Total Time: " +
+          totalElapsed.toFixed(2) +
+          " s | Avg Iterations/sec: " +
+          (T / totalElapsed).toFixed(2);
+      })();
+    </script>
+  </body>
+</html>

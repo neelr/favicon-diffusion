@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>GPUDiT Diffusion Denoising Process Demo</title>
+    <style>
+      body {
+        font-family: sans-serif;
+        margin: 2rem;
+      }
+      h1 {
+        margin-bottom: 0.5rem;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+      }
+      #stats {
+        margin-top: 1rem;
+        white-space: pre-line;
+        background: #f1f1f1;
+        padding: 0.5rem;
+        border: 1px solid #ccc;
+      }
+      canvas {
+        margin-top: 1rem;
+        border: 1px solid #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>GPUDiT Diffusion Denoising Process Demo</h1>
+    <p>
+      This demo creates an initial noise image and then “denoises” it
+      step‐by‐step via a reverse diffusion update (using the same math as the
+      Python sample). At each timestep the network (loaded from dit.clean.js) is
+      called to “predict noise” and the update is performed on WebGPU. The
+      canvas shows the image evolution, and statistics (total time, iterations
+      per second, mean/min/max/std) are displayed.
+    </p>
+    <button id="runSampling">Start Sampling</button>
+    <div id="stats">Status messages appear here…</div>
+    <!-- The canvas is used to display the current image (scaled up for visibility) -->
+    <canvas id="canvas" width="256" height="256"></canvas>
+
+    <!-- Include the GPUDiT and any shader helper scripts. Assumes dit.clean.js supplies GPUDiT. -->
+    <script src="dit.clean.js"></script>
+    <script src="shaders/shaders.js"></script>
+
+    <script>
+      (async () => {
+        // Check for WebGPU support.
+        if (!navigator.gpu) {
+          document.getElementById("stats").innerText =
+            "No WebGPU support found. Use a compatible browser.";
+          return;
+        }
+
+        // Request an adapter and device.
+        const adapter = await navigator.gpu.requestAdapter();
+        const device = await adapter.requestDevice();
+
+        // ----------------------------
+        // Configuration parameters:
+        // ----------------------------
+        const config = {
+          inputSize: 64, // image is 64x64
+          inChannels: 3, // 3 channels (RGB)
+          patchSize: 8, // (match trained settings)
+          dim: 512,
+          depth: 4,
+          dimHead: 128,
+          mlpMult: 4,
+          timeEmbDim: 128,
+          timesteps: 32, // use 32 reverse diffusion steps
+          betaStart: 1e-4, // (also used as cosine shift s)
+          betaEnd: 0.02,
+        };
+        const width = config.inputSize,
+          height = config.inputSize,
+          channels = config.inChannels;
+        const totalElements = width * height * channels;
+
+        // ----------------------------
+        // Precompute noise schedule arrays.
+        // This mirrors the Python get_noise_schedule() (using cosine schedule).
+        // ----------------------------
+        function linspace(start, stop, num) {
+          let arr = new Float32Array(num);
+          let step = (stop - start) / (num - 1);
+          for (let i = 0; i < num; i++) {
+            arr[i] = start + step * i;
+          }
+          return arr;
+        }
+
+        function getNoiseSchedule(timesteps, s) {
+          const steps = timesteps + 1;
+          let t_lin = linspace(0, timesteps, steps);
+          // Normalize to [0, 1]
+          for (let i = 0; i < t_lin.length; i++) {
+            t_lin[i] = t_lin[i] / timesteps;
+          }
+          let alphasCumprod = new Float32Array(steps);
+          for (let i = 0; i < steps; i++) {
+            // cosine schedule (s is used in place of beta_start shift)
+            alphasCumprod[i] = Math.cos(
+              ((t_lin[i] + s) / (1 + s)) * (Math.PI * 0.5)
+            );
+            alphasCumprod[i] *= alphasCumprod[i];
+          }
+          // Normalize so that alphasCumprod[0] == 1.
+          const first = alphasCumprod[0];
+          for (let i = 0; i < steps; i++) {
+            alphasCumprod[i] /= first;
+          }
+          let betas = new Float32Array(timesteps);
+          let alphas = new Float32Array(timesteps);
+          let alphaBars = new Float32Array(timesteps);
+          let prev = alphasCumprod[0];
+          for (let i = 0; i < timesteps; i++) {
+            let beta = 1 - alphasCumprod[i + 1] / prev;
+            beta = Math.min(Math.max(beta, 0), 0.999);
+            betas[i] = beta;
+            let alpha = 1 - beta;
+            alphas[i] = alpha;
+            if (i === 0) {
+              alphaBars[i] = alpha;
+            } else {
+              alphaBars[i] = alpha * alphaBars[i - 1];
+            }
+            prev = alphasCumprod[i + 1];
+          }
+          return { betas, alphas, alphaBars };
+        }
+
+        const { betas, alphas, alphaBars } = getNoiseSchedule(
+          config.timesteps,
+          config.betaStart
+        );
+
+        // ----------------------------
+        // Create our GPUDiT model.
+        // (Assumes dit.clean.js defines GPUDiT and that matrices.json is accessible.)
+        // ----------------------------
+        const statsElem = document.getElementById("stats");
+        statsElem.innerText = "Loading model weights...";
+        const model = new GPUDiT(device, config);
+        await model.loadWeights("matrices.json");
+        statsElem.innerText = "Weights loaded – ready to sample.";
+
+        // ----------------------------
+        // Create an initial noise image (x)
+        // using a Box–Muller method.
+        // ----------------------------
+        function randn() {
+          // returns a sample from a standard normal
+          let u = 0,
+            v = 0;
+          while (u === 0) u = Math.random();
+          while (v === 0) v = Math.random();
+          return Math.sqrt(-2.0 * Math.log(u)) * Math.cos(2.0 * Math.PI * v);
+        }
+        let xArray = new Float32Array(totalElements);
+        for (let i = 0; i < totalElements; i++) {
+          xArray[i] = randn();
+        }
+
+        // ----------------------------
+        // A helper to create a GPU buffer from a Float32Array.
+        // ----------------------------
+        function createBufferFromArray(device, array, usage) {
+          const buffer = device.createBuffer({
+            size: array.byteLength,
+            usage,
+            mappedAtCreation: true,
+          });
+          new Float32Array(buffer.getMappedRange()).set(array);
+          buffer.unmap();
+          return buffer;
+        }
+
+        // Create two buffers for “ping-pong” (we update one from the other).
+        let bufferX_A = createBufferFromArray(
+          device,
+          xArray,
+          GPUBufferUsage.STORAGE |
+            GPUBufferUsage.COPY_SRC |
+            GPUBufferUsage.COPY_DST
+        );
+        let bufferX_B = device.createBuffer({
+          size: xArray.byteLength,
+          usage:
+            GPUBufferUsage.STORAGE |
+            GPUBufferUsage.COPY_SRC |
+            GPUBufferUsage.COPY_DST,
+        });
+
+        // ----------------------------
+        // Set up a uniform buffer for the update parameters.
+        // We pack 7 floats (beta, alpha, alphaBar, sqrtRecipAlpha, coef, sqrtBeta, addNoise)
+        // and 1 uint (length); in total 8 x 4 bytes = 32 bytes.
+        // ----------------------------
+        const paramsBuffer = device.createBuffer({
+          size: 8 * 4,
+          usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+        });
+
+        // A buffer to hold per-pixel random noise (used if t > 0).
+        const noiseBuffer = device.createBuffer({
+          size: xArray.byteLength,
+          usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+        });
+
+        // ----------------------------
+        // Create a compute pipeline to run one reverse diffusion update step.
+        // WGSL shader implements:
+        //   mu = (1/√α) * (x – (β/√(1–ᾱ))*pred_noise)
+        //   x = mu + (if t>0 then √β * noise else 0)
+        // ----------------------------
+        const computeShaderCode = `
+struct Params {
+  beta : f32,
+  alpha : f32,
+  alphaBar : f32,
+  sqrtRecipAlpha : f32,
+  coef : f32,
+  sqrtBeta : f32,
+  addNoise : f32,
+  length : u32,
+};
+
+@group(0) @binding(0) var<storage, read> xBuffer : array<f32>;
+@group(0) @binding(1) var<storage, read> predBuffer : array<f32>;
+@group(0) @binding(2) var<storage, read> noiseBuffer : array<f32>;
+@group(0) @binding(3) var<storage, read_write> outBuffer : array<f32>;
+@group(0) @binding(4) var<uniform> params : Params;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) global_id : vec3<u32>) {
+  let i = global_id.x;
+  if (i >= params.length) {
+    return;
+  }
+  let x_val = xBuffer[i];
+  let pred = predBuffer[i];
+  let mu = params.sqrtRecipAlpha * (x_val - params.coef * pred);
+  var noise_term : f32 = 0.0;
+  if (params.addNoise > 0.5) {
+    let noise = noiseBuffer[i];
+    noise_term = params.sqrtBeta * noise;
+  }
+  outBuffer[i] = mu + noise_term;
+}
+        `;
+        const shaderModule = device.createShaderModule({
+          code: computeShaderCode,
+        });
+        const computePipeline = device.createComputePipeline({
+          layout: "auto",
+          compute: {
+            module: shaderModule,
+            entryPoint: "main",
+          },
+        });
+
+        // ----------------------------
+        // Helper: Run one diffusion update step.
+        // For timestep t (from T-1 down to 0) we
+        // 1) read the current x,
+        // 2) run the model (GPUDiT.forward) to get predNoise,
+        // 3) (if t>0) generate per-pixel random noise,
+        // 4) dispatch the compute shader update on GPU.
+        // ----------------------------
+        async function diffusionStep(t, currentBuffer, nextBuffer) {
+          // Compute scalar parameters (for timestep index t)
+          let beta = betas[t];
+          let alpha = alphas[t];
+          let alphaBar = alphaBars[t];
+          let sqrtRecipAlpha = 1.0 / Math.sqrt(alpha);
+          let coef = beta / Math.sqrt(1 - alphaBar);
+          let sqrtBeta = Math.sqrt(beta);
+          let addNoise = t > 0 ? 1.0 : 0.0;
+
+          // Pack parameters into a Float32Array:
+          const uniformData = new Float32Array([
+            beta,
+            alpha,
+            alphaBar,
+            sqrtRecipAlpha,
+            coef,
+            sqrtBeta,
+            addNoise,
+            totalElements,
+          ]);
+          device.queue.writeBuffer(paramsBuffer, 0, uniformData.buffer);
+
+          // ----------------------------
+          // (A) Evaluate the denoiser model.
+          // Read the current x from GPU (via a staging buffer).
+          // For a demo, the image is small so we can wait for the map.
+          // ----------------------------
+          const readBuffer = device.createBuffer({
+            size: xArray.byteLength,
+            usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+          });
+          let encoder = device.createCommandEncoder();
+          encoder.copyBufferToBuffer(
+            currentBuffer,
+            0,
+            readBuffer,
+            0,
+            xArray.byteLength
+          );
+          device.queue.submit([encoder.finish()]);
+          await readBuffer.mapAsync(GPUMapMode.READ);
+          const x_cpu = new Float32Array(readBuffer.getMappedRange().slice(0));
+          readBuffer.unmap();
+
+          // Call the model: pass in the current x and the time t.
+          // (It is assumed that model.forward returns a GPUBuffer of predicted noise.)
+          const predBufferGPU = await model.forward(x_cpu, t);
+
+          // ----------------------------
+          // (B) If needed, generate random noise (for t>0).
+          // ----------------------------
+          if (t > 0) {
+            const noiseArray = new Float32Array(totalElements);
+            for (let i = 0; i < totalElements; i++) {
+              noiseArray[i] = randn();
+            }
+            device.queue.writeBuffer(noiseBuffer, 0, noiseArray.buffer);
+          }
+
+          // ----------------------------
+          // (C) Dispatch the diffusion update compute pass.
+          // ----------------------------
+          const bindGroup = device.createBindGroup({
+            layout: computePipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: { buffer: currentBuffer } },
+              { binding: 1, resource: { buffer: predBufferGPU } },
+              { binding: 2, resource: { buffer: noiseBuffer } },
+              { binding: 3, resource: { buffer: nextBuffer } },
+              { binding: 4, resource: { buffer: paramsBuffer } },
+            ],
+          });
+          const commandEncoder = device.createCommandEncoder();
+          const passEncoder = commandEncoder.beginComputePass();
+          passEncoder.setPipeline(computePipeline);
+          passEncoder.setBindGroup(0, bindGroup);
+          const workgroupCount = Math.ceil(totalElements / 64);
+          passEncoder.dispatchWorkgroups(workgroupCount);
+          passEncoder.end();
+          device.queue.submit([commandEncoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+        }
+
+        // ----------------------------
+        // Render the current image (a 64x64 RGB array) into a canvas.
+        // We map pixel values from [-1, 1] to [0, 255].
+        // ----------------------------
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        function drawImage(xArray) {
+          const imageData = ctx.createImageData(width, height);
+          for (let i = 0; i < width * height; i++) {
+            const r = Math.min(
+              255,
+              Math.max(0, ((xArray[i * 3] + 1) / 2) * 255)
+            );
+            const g = Math.min(
+              255,
+              Math.max(0, ((xArray[i * 3 + 1] + 1) / 2) * 255)
+            );
+            const b = Math.min(
+              255,
+              Math.max(0, ((xArray[i * 3 + 2] + 1) / 2) * 255)
+            );
+            imageData.data[i * 4] = r;
+            imageData.data[i * 4 + 1] = g;
+            imageData.data[i * 4 + 2] = b;
+            imageData.data[i * 4 + 3] = 255;
+          }
+          ctx.putImageData(imageData, 0, 0);
+        }
+
+        // ----------------------------
+        // Compute basic statistics (mean, std, min, max) on a Float32Array.
+        // ----------------------------
+        function computeStats(data) {
+          let sum = 0,
+            sumSq = 0,
+            minVal = Infinity,
+            maxVal = -Infinity;
+          for (let i = 0; i < data.length; i++) {
+            const val = data[i];
+            sum += val;
+            sumSq += val * val;
+            if (val < minVal) minVal = val;
+            if (val > maxVal) maxVal = val;
+          }
+          const mean = sum / data.length;
+          const variance = sumSq / data.length - mean * mean;
+          const std = Math.sqrt(variance);
+          return { mean, std, minVal, maxVal };
+        }
+
+        // ----------------------------
+        // Main sampling (reverse diffusion) loop.
+        // At each timestep we run the update, read back x, draw the image, and update statistics.
+        // ----------------------------
+        document
+          .getElementById("runSampling")
+          .addEventListener("click", async () => {
+            const overallStart = performance.now();
+            let currentBuffer = bufferX_A;
+            let nextBuffer = bufferX_B;
+            for (let t = config.timesteps - 1; t >= 0; t--) {
+              const stepStart = performance.now();
+              await diffusionStep(t, currentBuffer, nextBuffer);
+              const stepEnd = performance.now();
+
+              // Read back the updated x from nextBuffer for visualization & stats.
+              const readBuffer = device.createBuffer({
+                size: xArray.byteLength,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+              });
+              let encoder = device.createCommandEncoder();
+              encoder.copyBufferToBuffer(
+                nextBuffer,
+                0,
+                readBuffer,
+                0,
+                xArray.byteLength
+              );
+              device.queue.submit([encoder.finish()]);
+              await readBuffer.mapAsync(GPUMapMode.READ);
+              const updatedX = new Float32Array(
+                readBuffer.getMappedRange().slice(0)
+              );
+              readBuffer.unmap();
+
+              // Compute step statistics.
+              const stats = computeStats(updatedX);
+              const stepTime = (stepEnd - stepStart).toFixed(2);
+              statsElem.innerText =
+                "Timestep: " +
+                t +
+                "\n" +
+                "Step time: " +
+                stepTime +
+                " ms\n" +
+                "Mean: " +
+                stats.mean.toFixed(3) +
+                ", Std: " +
+                stats.std.toFixed(3) +
+                "\nMin: " +
+                stats.minVal.toFixed(3) +
+                ", Max: " +
+                stats.maxVal.toFixed(3);
+
+              // Draw current image on canvas.
+              drawImage(updatedX);
+
+              // Swap the ping-pong buffers.
+              let temp = currentBuffer;
+              currentBuffer = nextBuffer;
+              nextBuffer = temp;
+
+              // A short delay so the user can observe the progression.
+              await new Promise((r) => setTimeout(r, 200));
+            }
+            const overallEnd = performance.now();
+            const totalTime = (overallEnd - overallStart).toFixed(2);
+            const ips = (
+              (config.timesteps / (overallEnd - overallStart)) *
+              1000
+            ).toFixed(2);
+            statsElem.innerText +=
+              "\nTotal sampling time: " +
+              totalTime +
+              " ms" +
+              "\nIterations per second: " +
+              ips;
+          });
+      })();
+    </script>
+  </body>
+</html>
