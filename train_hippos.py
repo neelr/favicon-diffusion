@@ -19,15 +19,13 @@ from tqdm import tqdm
 # Import DiT and its configuration from dit.py in the same folder.
 from dit import DiT, DiTConfig
 
-START_CHECKPOINT = "try2/dit_epoch_700.pt"
+START_CHECKPOINT = "dit_epoch_100.pt"
 
 # ------------------------------------------------------------------
 # Define a simple Dataset to load hippo images.
 # Since our images are all in one folder (hippo_images) and are PNGs,
 # we use glob to list all the files.
 # ------------------------------------------------------------------
-
-
 class HippoDataset(Dataset):
     def __init__(self, root, transform=None):
         self.root = root
@@ -67,11 +65,11 @@ def get_noise_schedule(timesteps, device, s=0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
     # Clamp betas for numerical stability.
     betas = torch.clamp(betas, 0, 0.999)
-
+    
     # Now compute alphas for each step and the cumulative product (ᾱ)
     alphas = 1 - betas
     alpha_bars = torch.cumprod(alphas, dim=0)
-
+    
     return betas, alphas, alpha_bars
 
 # ------------------------------------------------------------------
@@ -80,7 +78,7 @@ def get_noise_schedule(timesteps, device, s=0.008):
 # For each batch, we:
 #  1. Sample a random timestep (t) for every image.
 #  2. Sample random Gaussian noise.
-#  3. Create a noisy image:
+#  3. Create a noisy image: 
 #       x_t = sqrt(alpha_bar_t)*x_0 + sqrt(1 - alpha_bar_t)*noise
 #  4. Forward the noisy image (with time t) through the DiT,
 #     which is trained to predict the noise.
@@ -88,7 +86,6 @@ def get_noise_schedule(timesteps, device, s=0.008):
 #
 # We log training metrics to wandb as well.
 # ------------------------------------------------------------------
-
 
 def train():
     wandb.init(project="dit-ddpm-mnist", config={
@@ -101,8 +98,8 @@ def train():
         "mlp_mult": 4,
         "time_emb_dim": 128,
         "timesteps": 32,        # Experiment with 100, 200, etc.
-        "beta_start": 1e-4,
-        "beta_end": 0.02,
+        "beta_start": 3e-5,
+        "beta_end": 0.02, 
         "lr": 5e-4,
         "batch_size": 64,
         "epochs": 10000,
@@ -115,14 +112,14 @@ def train():
     # (Define your transforms, dataset, and dataloader here)
     # For example, using your existing HippoDataset:
     from torchvision import transforms
-
+    
     transform = transforms.Compose([
         transforms.Resize((config.input_size, config.input_size)),
         transforms.ToTensor(),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.Lambda(lambda t: t * 2 - 1),  # mapping [0,1] -> [-1,1]
     ])
-
+    
     dataset = HippoDataset(root=config.dataset_path, transform=transform)
     dataloader = DataLoader(dataset, batch_size=config.batch_size, shuffle=True,
                             num_workers=4, drop_last=True)
@@ -148,13 +145,11 @@ def train():
 
     # Build noise schedule (if needed in training)
     T = config.timesteps
-    betas, alphas, alpha_bars = get_noise_schedule(
-        T, device, s=config.beta_start)
+    betas, alphas, alpha_bars = get_noise_schedule(T, device, s=config.beta_start)
 
     global_step = 0
     # Outer progress bar for epochs:
-    outer_pbar = tqdm(range(config.epochs),
-                      desc="Training Epochs", unit="epoch")
+    outer_pbar = tqdm(range(config.epochs), desc="Training Epochs", unit="epoch")
     for epoch in outer_pbar:
         model.train()
         epoch_loss = 0.0
@@ -162,11 +157,11 @@ def train():
         for i, x0 in enumerate(dataloader):
             x0 = x0.to(device)  # x0 in range [-1,1]
             batch_size = x0.shape[0]
-
+            
             # Sample random time steps for each example.
             t = torch.randint(0, T, (batch_size,), device=device)
             alpha_bar_t = alpha_bars[t].view(batch_size, 1, 1, 1)
-
+            
             # Sample noise and create the noisy image x_t.
             noise = torch.randn_like(x0)
             sqrt_alpha_bar = torch.sqrt(alpha_bar_t)
@@ -174,9 +169,12 @@ def train():
             x_t = sqrt_alpha_bar * x0 + sqrt_one_minus_alpha_bar * noise
 
             t_float = t.float()  # model expects time as float
-            pred_noise = model(x_t, t_float)
-            loss = nn.functional.mse_loss(pred_noise, noise)
+            pred_noise, fin = model(x_t, t_float)
+            loss1 = nn.functional.mse_loss(pred_noise, noise)
+            loss2 = nn.functional.mse_loss(fin, x0)
 
+            loss = loss1 + loss2 * 0.6
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -184,25 +182,22 @@ def train():
             epoch_loss += loss.item()
             global_step += 1
             if global_step % 100 == 0:
-                wandb.log(
-                    {"loss": loss.item(), "global_step": global_step, "epoch": epoch})
-
+                wandb.log({"loss": loss.item(), "global_step": global_step, "epoch": epoch})
+        
         avg_loss = epoch_loss / len(dataloader)
         # print epoch result nicely with tqdm.write so it doesn't mess up the progress bar.
-        tqdm.write(
-            f"Epoch [{epoch+1}/{config.epochs}] Average Loss: {avg_loss:.6f}")
+        tqdm.write(f"Epoch [{epoch+1}/{config.epochs}] Average Loss: {avg_loss:.6f}")
         wandb.log({"epoch_avg_loss": avg_loss, "epoch": epoch})
-
+        
         # Optionally save a checkpoint every 50 epochs and log it.
         if (epoch + 1) % 50 == 0:
             ckpt_path = f"dit_epoch_{epoch+1}.pt"
             torch.save(model.state_dict(), ckpt_path)
             wandb.save(ckpt_path)
-
+    
     # Save final model.
     torch.save(model.state_dict(), "dit_final.pt")
     wandb.save("dit_final.pt")
-
 
 if __name__ == "__main__":
     train()
