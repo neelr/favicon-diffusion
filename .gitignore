@@ -6,3 +6,4 @@ data
 wandb
 matrices.json
 .vercelignore
+matrices.bin

@@ -946,24 +946,70 @@ class GPUDiT {
   }
 
   async loadWeights(weightsURL) {
-    // Helper: recursively compute the shape of a nested array.
-    function getShape(arr) {
-      if (!Array.isArray(arr)) return [];
-      const shape = [arr.length];
-      if (arr.length > 0 && Array.isArray(arr[0])) {
-        return shape.concat(getShape(arr[0]));
-      }
-      return shape;
+    // Fetch the binary file.
+    const response = await fetch(weightsURL);
+    const buffer = await response.arrayBuffer();
+    const dataView = new DataView(buffer);
+    let offset = 0;
+
+    // Verify the magic header (should be "WTS1").
+    let magic = "";
+    console.log("Reading weights from", weightsURL);
+    for (let i = 0; i < 4; i++) {
+      magic += String.fromCharCode(dataView.getUint8(offset));
+      offset += 1;
+    }
+    console.log("Magic header:", magic);
+    if (magic !== "WTS1") {
+      throw new Error("Invalid weights file format");
     }
 
-    // Helper: compute the product of numbers in an array.
-    const product = (arr) => arr.reduce((a, b) => a * b, 1);
+    // Read the number of weights.
+    const numWeights = dataView.getUint32(offset, true);
+    offset += 4;
+    const weightsData = {};
+    const textDecoder = new TextDecoder();
 
-    // Fetch and parse the weights JSON.
-    const response = await fetch(weightsURL);
-    const weightsData = await response.json();
+    // Now iteratively extract each weight.
+    for (let i = 0; i < numWeights; i++) {
+      // Read key length.
+      const keyLength = dataView.getUint32(offset, true);
+      offset += 4;
+      // Read key string.
+      const keyBytes = new Uint8Array(buffer, offset, keyLength);
+      const key = textDecoder.decode(keyBytes);
+      offset += keyLength;
+      // Skip padding bytes so that the total key bytes read (keyLength) is aligned to 4 bytes.
+      const padding = (4 - (keyLength % 4)) % 4;
+      offset += padding;
 
-    // Build list of expected keys.
+      // Read the number of dimensions.
+      const numDims = dataView.getUint32(offset, true);
+      offset += 4;
+      const shape = [];
+      for (let j = 0; j < numDims; j++) {
+        shape.push(dataView.getUint32(offset, true));
+        offset += 4;
+      }
+
+      // Read total number of elements.
+      const numElements = dataView.getUint32(offset, true);
+      offset += 4;
+      // Read the float32 data.
+      const byteLength = numElements * 4;
+      // Slice out the chunk so that the float data is 4-byte aligned.
+      const flatBuffer = buffer.slice(offset, offset + byteLength);
+      const flatArray = new Float32Array(flatBuffer);
+      offset += byteLength;
+
+      // Save the weight data.
+      weightsData[key] = {
+        flat: flatArray,
+        shape: shape,
+      };
+    }
+
+    // Optional: warn about extra/missing keys if desired.
     const expectedKeys = [];
     expectedKeys.push("patch_embed.weight");
     expectedKeys.push("time_mlp.1.weight");
@@ -984,13 +1030,11 @@ class GPUDiT {
     expectedKeys.push("final_norm.shift.weight");
     expectedKeys.push("to_pixels.weight");
 
-    // Warn about any unexpected keys.
     for (const key in weightsData) {
       if (!expectedKeys.includes(key)) {
         console.warn(`Warning: Unexpected key "${key}" found in weights file.`);
       }
     }
-    // Warn if any expected key is missing.
     for (const key of expectedKeys) {
       if (!(key in weightsData)) {
         console.warn(
@@ -1001,18 +1045,17 @@ class GPUDiT {
 
     const device = this.device;
 
-    // processWeight: check that the flattened length matches the expected product.
-    // expectedShapeArray – for each GPULinear, expected shape is [outFeatures, inFeatures].
+    // Helper: write the weight data onto the GPU buffer.
     function processWeight(key, weightBuffer, expectedShapeArray) {
       if (!(key in weightsData)) return;
-      const raw = weightsData[key];
-      const rawShape = getShape(raw);
-      const flat = flattenWeight(raw); // turns the nested array into a Float32Array.
+      const weight = weightsData[key];
+      const flat = weight.flat;
+      const rawShape = weight.shape;
       if (expectedShapeArray) {
-        const expectedElements = product(expectedShapeArray);
+        const expectedElements = expectedShapeArray.reduce((a, b) => a * b, 1);
         if (flat.length !== expectedElements) {
           console.error(
-            `Weight "${key}" shape mismatch: expected shape ${expectedShapeArray} (total ${expectedElements} elements) but got flattened length ${flat.length} (raw shape: [${rawShape}]).`
+            `Weight "${key}" shape mismatch: expected shape ${expectedShapeArray} (total ${expectedElements} elements) but got ${flat.length} (raw shape: [${rawShape}]).`
           );
         } else {
           console.log(
@@ -1027,32 +1070,27 @@ class GPUDiT {
       device.queue.writeBuffer(weightBuffer, 0, flat);
     }
 
-    // 1. Load patch embedding weights.
-    // patchEmbedding was constructed as new GPULinear(device, patchDim, dim)
-    // so expected shape is [dim, patchDim].
+    // Load patch embedding weights.
     processWeight("patch_embed.weight", this.patchEmbedding.weightBuffer, [
       this.dim,
       this.patchDim,
     ]);
 
-    // 2. Load time MLP weights.
-    // timeMLP1: new GPULinear(device, floor(dim / 2), timeEmbDim) --> [timeEmbDim, floor(dim/2)]
+    // Load time MLP weights.
     processWeight("time_mlp.1.weight", this.timeMLP1.weightBuffer, [
       this.timeEmbDim,
       Math.floor(this.dim / 2),
     ]);
-    // timeMLP2: new GPULinear(device, timeEmbDim, timeEmbDim) --> [timeEmbDim, timeEmbDim]
     processWeight("time_mlp.3.weight", this.timeMLP2.weightBuffer, [
       this.timeEmbDim,
       this.timeEmbDim,
     ]);
 
-    // 3. Load Transformer block weights.
+    // Load Transformer block weights.
     for (let i = 0; i < this.depth; i++) {
       const block = this.blocks[i];
       const prefix = `block_${i}.`;
       // Attention projection layers.
-      // attn.to_q: new GPULinear(device, dim, dimHead) → expected shape: [dimHead, dim]
       processWeight(
         `${prefix}attn.to_q.weight`,
         block.attn.qProj.weightBuffer,
@@ -1068,25 +1106,21 @@ class GPUDiT {
         block.attn.vProj.weightBuffer,
         [this.dimHead, this.dim]
       );
-      // attn.to_out: new GPULinear(device, dimHead, dim) → expected shape: [dim, dimHead]
       processWeight(
         `${prefix}attn.to_out.weight`,
         block.attn.outProj.weightBuffer,
         [this.dim, this.dimHead]
       );
       // Feed-forward layers.
-      // linear1: new GPULinear(device, dim, dim*mlpMult) → expected shape: [dim*mlpMult, dim]
       processWeight(`${prefix}ff.net.0.weight`, block.ff.linear1.weightBuffer, [
         this.dim * this.mlpMult,
         this.dim,
       ]);
-      // linear2: new GPULinear(device, dim*mlpMult, dim) → expected shape: [dim, dim*mlpMult]
       processWeight(`${prefix}ff.net.2.weight`, block.ff.linear2.weightBuffer, [
         this.dim,
         this.dim * this.mlpMult,
       ]);
-      // Adaptive LayerNorm projections in the transformer block.
-      // norm1: new GPULinear(device, timeEmbDim, dim) → expected shape: [dim, timeEmbDim]
+      // LayerNorm (adaptive) projections.
       processWeight(
         `${prefix}norm1.scale.weight`,
         block.norm1.scaleProj.weightBuffer,
@@ -1097,7 +1131,6 @@ class GPUDiT {
         block.norm1.shiftProj.weightBuffer,
         [this.dim, this.timeEmbDim]
       );
-      // norm2: same expected shape.
       processWeight(
         `${prefix}norm2.scale.weight`,
         block.norm2.scaleProj.weightBuffer,
@@ -1110,9 +1143,7 @@ class GPUDiT {
       );
     }
 
-    // 4. Load final normalization and output projection.
-    // final_norm: new GPUAdaLN(device, dim, timeEmbDim) internally creates
-    // two GPULinear projections (scale and shift) with expected shape [dim, timeEmbDim].
+    // Load final normalization and output projection.
     processWeight(
       "final_norm.scale.weight",
       this.finalNorm.scaleProj.weightBuffer,
@@ -1123,7 +1154,6 @@ class GPUDiT {
       this.finalNorm.shiftProj.weightBuffer,
       [this.dim, this.timeEmbDim]
     );
-    // to_pixels: new GPULinear(device, dim, patchDim) → expected shape: [patchDim, dim]
     processWeight("to_pixels.weight", this.toPixels.weightBuffer, [
       this.patchDim,
       this.dim,

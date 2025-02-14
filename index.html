@@ -13,8 +13,8 @@
         border: 1px solid #ccc;
         image-rendering: pixelated;
         display: block;
-        width: 256px;
-        height: 256px;
+        width: 128px;
+        height: 128px;
         margin: 0 auto;
       }
       #status {
@@ -163,7 +163,7 @@
         // Instantiate and load the model.
         statusDiv.textContent = "Loading DiT model weights...";
         const model = new GPUDiT(device, config);
-        await model.loadWeights("matrices.json");
+        await model.loadWeights("matrices.bin");
         await device.queue.onSubmittedWorkDone();
         statusDiv.textContent = "Model loaded. Starting diffusion sampling...";
 

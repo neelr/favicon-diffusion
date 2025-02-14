@@ -73,7 +73,7 @@
         // Create the GPUDiT model and load its weights.
         const model = new GPUDiT(device, config);
         statusDiv.innerText = "Loading weights...";
-        await model.loadWeights("matrices.json");
+        await model.loadWeights("matrices.bin");
         await device.queue.onSubmittedWorkDone();
         statusDiv.innerText = "Weights loaded. Ready to run network.";
 
