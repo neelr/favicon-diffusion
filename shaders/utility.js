@@ -60,9 +60,6 @@ async function logBuffer(device, buffer, label = "Buffer stats (first 300)") {
   return stats;
 }
 
-const ELEMENT_WISE_ADD_SHADER_CODE = (numElements) =>
-  ADD_SHADER_CODE.replace(/_NUM_ELEMENTS_/g, numElements);
-
 function createBufferFromArray(device, array, usage) {
   const buffer = device.createBuffer({
     size: array.byteLength,
@@ -70,6 +67,24 @@ function createBufferFromArray(device, array, usage) {
     mappedAtCreation: true,
   });
   new Float32Array(buffer.getMappedRange()).set(array);
+  buffer.unmap();
+  return buffer;
+}
+
+// Helper function to create a GPU buffer with random values
+function createRandomBuffer(device, size, mean = 0.0, stddev = 0.02) {
+  // Create random values using normal distribution
+  const values = new Float32Array(size);
+
+  const buffer = device.createBuffer({
+    size: values.byteLength,
+    usage:
+      GPUBufferUsage.STORAGE |
+      GPUBufferUsage.COPY_DST |
+      GPUBufferUsage.COPY_SRC,
+    mappedAtCreation: true,
+  });
+  new Float32Array(buffer.getMappedRange()).set(values);
   buffer.unmap();
   return buffer;
 }
