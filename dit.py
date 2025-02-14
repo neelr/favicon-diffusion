@@ -6,34 +6,18 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Optional
 
-LOG = False
-
-
-def log_tens(t, label=""):
-    if not LOG:
-        return
-    print(label)
-    print(f"flattened length: {t.flatten().shape}")
-    print(f"shape: {t.shape}")
-    print(f"mean: {t.mean()}")
-    print(f"std: {t.std()}")
-    print(f"min: {t.min()}")
-    print(f"max: {t.max()}")
-    # first 5 elements
-    print(f"first 5: {t.flatten()[:5]}")
-
 
 @dataclass
 class DiTConfig:
     """Configuration for DiT model"""
     input_size: int = 64          # Input image size
-    patch_size: int = 8           # Patch size
+    patch_size: int = 4           # Patch size
     in_channels: int = 3          # Number of input channels
-    dim: int = 512               # Hidden dimension
-    depth: int = 4              # Number of transformer blocks
-    dim_head: int = 128          # Dimension per attention head
+    dim: int = 768               # Hidden dimension
+    depth: int = 12              # Number of transformer blocks
+    dim_head: int = 192          # Dimension per attention head
     mlp_mult: int = 4            # MLP expansion factor
-    time_emb_dim: int = 128      # Time embedding dimension
+    time_emb_dim: int = 768      # Time embedding dimension
 
 
 class SinusoidalPosEmb(nn.Module):
@@ -103,9 +87,6 @@ class AdaLN(nn.Module):
         scale = 1 + self.scale_proj(time_emb).unsqueeze(1)
         shift = self.shift_proj(time_emb).unsqueeze(1)
 
-        log_tens(scale, "scale")
-        log_tens(shift, "shift")
-
         return norm_x * scale + shift
 
 
@@ -142,7 +123,7 @@ class Attention(nn.Module):
 
 
 class FeedForward(nn.Module):
-    """MLP with SiLU activation"""
+    """MLP with GeLU activation"""
 
     def __init__(self, dim, mult=4):
         super().__init__()
@@ -217,6 +198,7 @@ class DiT(nn.Module):
         ])
 
         self.final_norm = AdaLN(config.dim, config.time_emb_dim)
+        self.proj_fin = nn.Linear(config.dim, self.patch_dim)
         self.to_pixels = nn.Linear(
             config.dim, self.patch_dim, bias=False)  # Removed bias
 
@@ -253,25 +235,18 @@ class DiT(nn.Module):
 
         # Time embedding
         time_emb = self.time_mlp(time)
-        # Process through transformer blocks
 
-        log_tens(x, "x before blocks")
-        log_tens(time_emb, "time_emb before blocks")
-        i = 0
+        # Process through transformer blocks
         for block in self.blocks:
-            i += 1
             x = block(x, time_emb)
-            if i == 1:
-                log_tens(x, "x after first block")
-        log_tens(x, "x after blocks")
 
         # Final norm and projection
-        x = self.final_norm(x, time_emb)
-        x = self.to_pixels(x)
-
+        latent = self.final_norm(x, time_emb)
+        x = self.to_pixels(latent)
+        fin = self.proj_fin(latent)
         # Unpatchify to image
         x = self.unpatchify(x)
-        return x
+        return x, self.unpatchify(fin)
 
     def export_matrices(self) -> Dict[str, torch.Tensor]:
         """Export all learnable matrices for comparison with WebGPU implementation"""
