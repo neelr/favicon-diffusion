@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>TensorFlow.js Benchmark</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+      }
+      #container {
+        max-width: 600px;
+        margin: 2rem auto;
+        text-align: center;
+      }
+      #description {
+        margin-bottom: 1rem;
+        font-size: 1rem;
+      }
+      #results {
+        margin: 1rem 0;
+        font-weight: bold;
+      }
+      button {
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+        cursor: pointer;
+        background: #4caf50;
+        color: white;
+        border: none;
+        border-radius: 4px;
+      }
+      button:hover {
+        background: #45a049;
+      }
+      button:disabled {
+        background: #cccccc;
+        cursor: not-allowed;
+      }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0"></script>
+  </head>
+  <body>
+    <div id="container">
+      <h1>TensorFlow.js Benchmark</h1>
+      <div id="description">
+        Click the button below to run the benchmark. This will construct and run
+        multiple Transformer blocks on randomized data to estimate performance.
+      </div>
+
+      <button id="runButton">Run Benchmark</button>
+      <button id="avgButton" style="margin-left: 10px">
+        Average Benchmark (100 runs)
+      </button>
+      <div id="results"></div>
+    </div>
+
+    <script>
+      // Create reusable layers
+      const createLayers = (dim, mlpMult) => {
+        return {
+          norm: tf.layers.layerNormalization({ axis: -1, epsilon: 1e-6 }),
+          qProj: tf.layers.dense({ units: dim }),
+          kProj: tf.layers.dense({ units: dim }),
+          vProj: tf.layers.dense({ units: dim }),
+          ffn1: tf.layers.dense({ units: dim * mlpMult }),
+          ffn2: tf.layers.dense({ units: dim }),
+        };
+      };
+
+      async function transformerBlock(
+        input,
+        timeEmb,
+        batchSize,
+        seqLength,
+        dim,
+        numHeads,
+        dimHead,
+        mlpMult,
+        layers
+      ) {
+        return tf.tidy(() => {
+          // 1) Apply layer normalization
+          const normalized = layers.norm.apply(input);
+          // shape: [batchSize, seqLength, dim] => e.g. [1, 64, 512]
+
+          // 2) Project time embedding from [timeEmbDim] => [dim], then reshape to [1, 1, dim]
+          //
+          //   a) timeEmb.expandDims(0) gives [1, timeEmbDim]
+          //   b) tf.layers.dense({ units: dim }) => projects to [1, dim]
+          //   c) expandDims(1) => [1, 1, dim], so it can broadcast across seqLength
+          //
+          const timeEmbProjected2D = tf.layers
+            .dense({ units: dim })
+            .apply(timeEmb.expandDims(0)); // [1, dim]
+          const timeEmbBroadcast = timeEmbProjected2D.expandDims(1); // [1, 1, dim]
+
+          // 3) Add or multiply that broadcasted embedding with the normalized input
+          //    Because normalized is [batchSize, seqLength, dim], and timeEmbBroadcast is [1, 1, dim],
+          //    it will broadcast along [1, seqLength, dim].
+          const scale = tf.add(normalized, timeEmbBroadcast);
+          const adaln = tf.mul(normalized, scale);
+
+          // Self-attention: Q, K, V
+          const q = layers.qProj.apply(adaln);
+          const k = layers.kProj.apply(adaln);
+          const v = layers.vProj.apply(adaln);
+
+          // Reshape for multi-head attention
+          const qReshaped = tf.reshape(q, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+          const kReshaped = tf.reshape(k, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+          const vReshaped = tf.reshape(v, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+
+          // Attention
+          const dots = tf.matMul(qReshaped, kReshaped, false, true);
+          const attn = tf.softmax(tf.mul(dots, 1.0 / Math.sqrt(dimHead)));
+          const out = tf.matMul(attn, vReshaped);
+          const outReshaped = tf.reshape(out, [batchSize, seqLength, dim]);
+
+          // Feed-forward network
+          const ffn1Out = layers.ffn1.apply(outReshaped);
+          const activated = tf.mul(ffn1Out, tf.sigmoid(ffn1Out)); // SiLU
+          const ffn2Out = layers.ffn2.apply(activated);
+
+          return ffn2Out;
+        });
+      }
+
+      async function runSingleBenchmark() {
+        // Configuration
+        const inputSize = 64;
+        const patchSize = 8;
+        const inChannels = 3;
+        const dim = 512;
+        const depth = 4;
+        const dimHead = 128;
+        const mlpMult = 4;
+        const timeEmbDim = 128;
+
+        // Derived values
+        const batchSize = 1;
+        const numPatches = (inputSize / patchSize) * (inputSize / patchSize);
+        const patchDim = patchSize * patchSize * inChannels;
+        const numHeads = dim / dimHead;
+        const numTimesteps = 32;
+
+        try {
+          // Create layers for each transformer block
+          const transformerLayers = Array(depth)
+            .fill(null)
+            .map(() => createLayers(dim, mlpMult));
+
+          // Create dummy input data
+          let x = tf.tidy(() => {
+            const input = tf.randomNormal([batchSize, numPatches, patchDim]);
+            return tf.layers.dense({ units: dim }).apply(input);
+          });
+
+          const t0 = performance.now();
+
+          // Run the forward passes
+          for (let t = 0; t < numTimesteps; t++) {
+            // Create time embedding for this timestep
+            const timeEmb = tf.randomNormal([timeEmbDim]);
+
+            // Run through all transformer blocks for this timestep
+            for (let d = 0; d < depth; d++) {
+              const result = await transformerBlock(
+                x,
+                timeEmb,
+                batchSize,
+                numPatches,
+                dim,
+                numHeads,
+                dimHead,
+                mlpMult,
+                transformerLayers[d]
+              );
+
+              // Only dispose previous x after we have the new result
+              if (d === depth - 1) {
+                // On last depth, dispose both x and timeEmb
+                x.dispose();
+                timeEmb.dispose();
+              } else {
+                // Otherwise just dispose x
+                x.dispose();
+              }
+              x = result;
+            }
+          }
+
+          const t1 = performance.now();
+          x.dispose();
+          return (t1 - t0) / 1000;
+        } catch (error) {
+          console.error("Error in runSingleBenchmark:", error);
+          throw error;
+        }
+      }
+
+      async function runBenchmark() {
+        const resultsDiv = document.getElementById("results");
+        resultsDiv.textContent = "Running benchmark...";
+
+        try {
+          const elapsed = await runSingleBenchmark();
+          resultsDiv.textContent = `Benchmark complete. Total time: ${elapsed.toFixed(
+            2
+          )} s`;
+        } catch (error) {
+          resultsDiv.textContent = `Error during benchmark: ${error.message}`;
+          console.error(error);
+        } finally {
+          // Clean up any remaining tensors
+          tf.engine().disposeVariables();
+          tf.engine().reset();
+        }
+      }
+
+      async function averageBenchmark() {
+        const resultsDiv = document.getElementById("results");
+        resultsDiv.textContent = "Running benchmark 100 times...";
+        let total = 0;
+        const runs = 100;
+
+        try {
+          for (let i = 0; i < runs; i++) {
+            const elapsed = await runSingleBenchmark();
+            total += elapsed;
+            resultsDiv.textContent = `Benchmark progress: ${
+              i + 1
+            }/${runs} runs | Avg time: ${(total / (i + 1)).toFixed(2)}s`;
+
+            // Clean up after each run
+            tf.engine().disposeVariables();
+            tf.engine().reset();
+          }
+
+          const avg = total / runs;
+          resultsDiv.textContent = `Benchmark complete. Average time over ${runs} runs: ${avg.toFixed(
+            2
+          )}s`;
+        } catch (error) {
+          resultsDiv.textContent = `Error during benchmark: ${error.message}`;
+          console.error(error);
+        } finally {
+          // Final cleanup
+          tf.engine().disposeVariables();
+          tf.engine().reset();
+        }
+      }
+
+      // Attach event listeners to the buttons
+      document
+        .getElementById("runButton")
+        .addEventListener("click", () => runBenchmark());
+      document
+        .getElementById("avgButton")
+        .addEventListener("click", () => averageBenchmark());
+    </script>
+  </body>
+</html>

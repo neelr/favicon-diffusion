@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Baseline JS Benchmark</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+      }
+      #container {
+        max-width: 600px;
+        margin: 2rem auto;
+        text-align: center;
+      }
+      #description {
+        margin-bottom: 1rem;
+        font-size: 1rem;
+      }
+      #results {
+        margin: 1rem 0;
+        font-weight: bold;
+      }
+      #runButton {
+        padding: 0.5rem 1rem;
+        font-size: 1rem;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container">
+      <h1>Baseline JS Benchmark</h1>
+      <div id="description">
+        Click the button below to run the benchmark. This benchmark runs a
+        baseline JavaScript implementation of transformer blocks on randomized
+        data to estimate performance.
+      </div>
+      <button id="runButton">Run Benchmark</button>
+      <div id="results"></div>
+    </div>
+
+    <script>
+      /*
+        This benchmark simulates a Transformer architecture in baseline JavaScript.
+        I implement minimal versions of dense, layerNormalization, randomNormal, and other
+        math operations to simulate a transformer block.
+        Note: This implementation is for benchmarking purposes only and is not optimized for performance.
+      */
+
+      // A simple tidy() implementation that just calls the function
+      function tidy(f) {
+        return f();
+      }
+
+      // Minimal implementation of a transformers-like math API using plain JavaScript arrays.
+      const tr = {
+        layers: {
+          dense: function (config) {
+            const units = config.units;
+            return {
+              config: config,
+              weights: null,
+              apply: function (x) {
+                // x can be 2D or 3D. We assume the last dimension is the input dimension.
+                const getInputDim = (data) =>
+                  Array.isArray(data[0]) ? data[0].length : 1;
+                const input_dim = getInputDim(x);
+                if (!this.weights) {
+                  // Initialize weights: shape [input_dim, units]
+                  this.weights = [];
+                  for (let i = 0; i < input_dim; i++) {
+                    const row = [];
+                    for (let j = 0; j < units; j++) {
+                      row.push(Math.random() * 0.1);
+                    }
+                    this.weights.push(row);
+                  }
+                }
+
+                function matMul2D(input) {
+                  const result = [];
+                  for (let i = 0; i < input.length; i++) {
+                    const outRow = [];
+                    for (let j = 0; j < units; j++) {
+                      let sum = 0;
+                      for (let k = 0; k < input_dim; k++) {
+                        sum += input[i][k] * this.weights[k][j];
+                      }
+                      outRow.push(sum);
+                    }
+                    result.push(outRow);
+                  }
+                  return result;
+                }
+
+                if (Array.isArray(x[0]) && Array.isArray(x[0][0])) {
+                  // 3D tensor: apply the dense layer to each 2D slice
+                  const result = [];
+                  for (let b = 0; b < x.length; b++) {
+                    result.push(matMul2D.call(this, x[b]));
+                  }
+                  return result;
+                } else {
+                  return matMul2D.call(this, x);
+                }
+              },
+            };
+          },
+          layerNormalization: function (config) {
+            return {
+              config: config,
+              apply: function (x) {
+                // Normalize along the last dimension for 1D or 2D arrays
+                function normalize(arr) {
+                  const mean =
+                    arr.reduce((sum, val) => sum + val, 0) / arr.length;
+                  const variance =
+                    arr.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) /
+                    arr.length;
+                  const epsilon = config.epsilon || 1e-6;
+                  return arr.map(
+                    (val) => (val - mean) / Math.sqrt(variance + epsilon)
+                  );
+                }
+                if (Array.isArray(x[0])) {
+                  return x.map((row) => normalize(row));
+                } else {
+                  return normalize(x);
+                }
+              },
+            };
+          },
+        },
+        randomNormal: function (shape) {
+          // Recursively create nested arrays filled with normally distributed random numbers
+          function createArray(dims) {
+            if (dims.length === 1) {
+              const arr = [];
+              for (let i = 0; i < dims[0]; i++) {
+                // Box-Muller method
+                const u1 = Math.random();
+                const u2 = Math.random();
+                const z0 =
+                  Math.sqrt(-2.0 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+                arr.push(z0);
+              }
+              return arr;
+            } else {
+              const arr = [];
+              const rest = dims.slice(1);
+              for (let i = 0; i < dims[0]; i++) {
+                arr.push(createArray(rest));
+              }
+              return arr;
+            }
+          }
+          return createArray(shape);
+        },
+        expandDims: function (x, axis) {
+          // Only handling axis = 0 for simplicity
+          if (axis === undefined || axis === 0) {
+            return [x];
+          }
+          return x;
+        },
+        reshape: function (x, newShape) {
+          // Naively flatten x and rebuild the nested array with newShape
+          function flatten(arr) {
+            return arr.reduce(
+              (acc, val) => acc.concat(Array.isArray(val) ? flatten(val) : val),
+              []
+            );
+          }
+          const flat = flatten(x);
+          function build(shape, flatArr) {
+            if (shape.length === 1) {
+              return flatArr.splice(0, shape[0]);
+            } else {
+              const arr = [];
+              const size = shape[0];
+              const subshape = shape.slice(1);
+              for (let i = 0; i < size; i++) {
+                arr.push(build(subshape, flatArr));
+              }
+              return arr;
+            }
+          }
+          return build(newShape, flat.slice());
+        },
+        add: function (a, b) {
+          if (typeof a === "number" && typeof b === "number") return a + b;
+          if (Array.isArray(a) && Array.isArray(b)) {
+            return a.map((val, idx) => tr.add(val, b[idx]));
+          }
+          if (typeof a === "number") return b.map((val) => tr.add(a, val));
+          if (typeof b === "number") return a.map((val) => tr.add(val, b));
+          return null;
+        },
+        mul: function (a, b) {
+          if (typeof a === "number" && typeof b === "number") return a * b;
+          if (Array.isArray(a) && Array.isArray(b)) {
+            return a.map((val, idx) => tr.mul(val, b[idx]));
+          }
+          if (typeof a === "number") return b.map((val) => tr.mul(a, val));
+          if (typeof b === "number") return a.map((val) => tr.mul(val, b));
+          return null;
+        },
+        matMul: function (a, b, transposeA, transposeB) {
+          // Only 2D matMul is implemented here
+          if (transposeA) {
+            a = tr.transpose(a);
+          }
+          if (transposeB) {
+            b = tr.transpose(b);
+          }
+          const m = a.length;
+          const k = a[0].length;
+          const n = b[0].length;
+          const result = [];
+          for (let i = 0; i < m; i++) {
+            const row = [];
+            for (let j = 0; j < n; j++) {
+              let sum = 0;
+              for (let p = 0; p < k; p++) {
+                sum += a[i][p] * b[p][j];
+              }
+              row.push(sum);
+            }
+            result.push(row);
+          }
+          return result;
+        },
+        transpose: function (a) {
+          const m = a.length;
+          const n = a[0].length;
+          const result = [];
+          for (let j = 0; j < n; j++) {
+            const row = [];
+            for (let i = 0; i < m; i++) {
+              row.push(a[i][j]);
+            }
+            result.push(row);
+          }
+          return result;
+        },
+        softmax: function (x) {
+          // Assume x is a 2D array; apply softmax on each row.
+          return x.map((row) => {
+            const maxVal = Math.max(...row);
+            const exps = row.map((val) => Math.exp(val - maxVal));
+            const sumExps = exps.reduce((a, b) => a + b, 0);
+            return exps.map((exp) => exp / sumExps);
+          });
+        },
+        sqrt: Math.sqrt,
+        sigmoid: function (x) {
+          if (typeof x === "number") return 1 / (1 + Math.exp(-x));
+          if (Array.isArray(x)) return x.map((val) => tr.sigmoid(val));
+          return x;
+        },
+      };
+
+      // Create reusable layers for the transformer block
+      const createLayers = (dim, mlpMult) => {
+        return {
+          norm: tr.layers.layerNormalization({ axis: -1, epsilon: 1e-6 }),
+          qProj: tr.layers.dense({ units: dim }),
+          kProj: tr.layers.dense({ units: dim }),
+          vProj: tr.layers.dense({ units: dim }),
+          ffn1: tr.layers.dense({ units: dim * mlpMult }),
+          ffn2: tr.layers.dense({ units: dim }),
+        };
+      };
+
+      async function transformerBlock(
+        input,
+        timeEmb,
+        batchSize,
+        seqLength,
+        dim,
+        numHeads,
+        dimHead,
+        mlpMult,
+        layers
+      ) {
+        return tidy(() => {
+          // 1) Layer Normalization
+          const normalized = layers.norm.apply(input);
+
+          // 2) Project time embedding ([timeEmbDim] -> [dim]) and reshape to [1, 1, dim]
+          const denseTime = tr.layers.dense({ units: dim });
+          const timeEmbExpanded = tr.expandDims(timeEmb, 0); // [1, timeEmbDim]
+          const timeEmbProjected2D = denseTime.apply(timeEmbExpanded); // [1, dim]
+          const timeEmbBroadcast = tr.expandDims(timeEmbProjected2D, 1); // [1, 1, dim]
+
+          // 3) Combine normalized input with time embedding
+          const scale = tr.add(normalized, timeEmbBroadcast);
+          const adaln = tr.mul(normalized, scale);
+
+          // Self-attention projections
+          const q = layers.qProj.apply(adaln);
+          const k = layers.kProj.apply(adaln);
+          const v = layers.vProj.apply(adaln);
+
+          // Reshape to 4D: [batchSize, seqLength, numHeads, dimHead]
+          const qReshaped = tr.reshape(q, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+          const kReshaped = tr.reshape(k, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+          const vReshaped = tr.reshape(v, [
+            batchSize,
+            seqLength,
+            numHeads,
+            dimHead,
+          ]);
+
+          // For simplicity, we simulate the multi-head attention by computing a dummy attention output.
+          // In a full implementation, we would compute scaled dot-product attention per head.
+          let outCombined = [];
+          for (let b = 0; b < batchSize; b++) {
+            let sequence = [];
+            for (let s = 0; s < seqLength; s++) {
+              let headOutputs = [];
+              for (let h = 0; h < numHeads; h++) {
+                // Dummy head output: a vector of length dimHead
+                const headOutput = new Array(dimHead).fill(0.1 * (h + 1));
+                headOutputs.push(headOutput);
+              }
+              // Average over heads
+              const combined = headOutputs[0].map(
+                (_, i) =>
+                  headOutputs.reduce((sum, head) => sum + head[i], 0) / numHeads
+              );
+              sequence.push(combined);
+            }
+            outCombined.push(sequence);
+          }
+
+          // Feed-forward network
+          const ffn1Out = layers.ffn1.apply(outCombined);
+          // SiLU activation: x * sigmoid(x)
+          function silu(x) {
+            if (typeof x === "number") return x * tr.sigmoid(x);
+            return x.map((val) => silu(val));
+          }
+          const activated = ffn1Out.map((row) => silu(row));
+          const ffn2Out = layers.ffn2.apply(activated);
+
+          return ffn2Out;
+        });
+      }
+
+      async function runBenchmark() {
+        const resultsDiv = document.getElementById("results");
+        resultsDiv.textContent = "Running benchmark...";
+
+        // Configuration (same as the tfjs benchmark)
+        const inputSize = 64;
+        const patchSize = 8;
+        const dim = 512;
+        const depth = 4;
+        const dimHead = 128;
+        const mlpMult = 4;
+        const timeEmbDim = 128;
+
+        // Derived values
+        const batchSize = 1;
+        const numPatches = (inputSize / patchSize) * (inputSize / patchSize);
+        const numHeads = Math.floor(dim / dimHead);
+        const numTimesteps = 32;
+
+        // Create transformer layers
+        const transformerLayers = Array(depth)
+          .fill(null)
+          .map(() => createLayers(dim, mlpMult));
+
+        // Create dummy input: shape [batchSize, numPatches, dim]
+        let x = tr.randomNormal([batchSize, numPatches, dim]);
+
+        const t0 = performance.now();
+
+        for (let t = 0; t < numTimesteps; t++) {
+          const timeEmb = tr.randomNormal([timeEmbDim]);
+          for (let d = 0; d < depth; d++) {
+            x = await transformerBlock(
+              x,
+              timeEmb,
+              batchSize,
+              numPatches,
+              dim,
+              numHeads,
+              dimHead,
+              mlpMult,
+              transformerLayers[d]
+            );
+          }
+        }
+        // Simulate disposal
+        x = null;
+
+        const t1 = performance.now();
+        const elapsed = ((t1 - t0) / 1000).toFixed(2);
+        resultsDiv.textContent = `Benchmark complete. Total time: ${elapsed} s`;
+      }
+
+      document
+        .getElementById("runButton")
+        .addEventListener("click", () => runBenchmark());
+    </script>
+  </body>
+</html>
