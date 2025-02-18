@@ -44,7 +44,7 @@
         cursor: not-allowed;
       }
     </style>
-    <!-- Load external scripts with defer so they’re fetched asynchronously -->
+    <!-- Load external scripts with defer so they're fetched asynchronously -->
     <script src="shaders/shaders.js"></script>
     <script src="dit.js"></script>
   </head>
@@ -54,6 +54,9 @@
     <div id="status"></div>
     <div id="controls">
       <button id="retryButton" disabled>Generate New Image</button>
+      <button id="benchButton" style="margin-left: 10px" disabled>
+        Run Forward Pass Benchmark
+      </button>
     </div>
 
     <script defer>
@@ -151,11 +154,13 @@
         constructor() {
           this.statusDiv = document.getElementById("status");
           this.retryButton = document.getElementById("retryButton");
+          this.benchButton = document.getElementById("benchButton");
           this.canvas = document.getElementById("displayCanvas");
           this.ctx = this.canvas.getContext("2d");
           this.titleTag = document.getElementById("title-tag");
           this.favicon = document.getElementById("favicon");
           this.isGenerating = false;
+          this.isBenchmarking = false;
 
           // Model configuration.
           this.config = {
@@ -181,10 +186,19 @@
 
           // Set up the retry button.
           this.retryButton.addEventListener("click", async () => {
-            if (!this.isGenerating) {
+            if (!this.isGenerating && !this.isBenchmarking) {
               this.retryButton.disabled = true;
               await this.generateImage();
               this.retryButton.disabled = false;
+            }
+          });
+
+          // Set up the benchmark button
+          this.benchButton.addEventListener("click", async () => {
+            if (!this.isGenerating && !this.isBenchmarking) {
+              this.benchButton.disabled = true;
+              await this.runBenchmark();
+              this.benchButton.disabled = false;
             }
           });
         }
@@ -203,6 +217,7 @@
           await this.model.loadWeights("/matrices.bin");
           await this.device.queue.onSubmittedWorkDone();
           this.retryButton.disabled = false;
+          this.benchButton.disabled = false;
           return true;
         }
 
@@ -300,6 +315,46 @@
             2
           )} s | Avg iters/sec: ${(this.T / totalElapsed).toFixed(2)}`;
           this.isGenerating = false;
+        }
+
+        async runSingleBenchmark() {
+          // Create dummy input data
+          let x = new Float32Array(this.numElements);
+          for (let i = 0; i < this.numElements; i++) {
+            x[i] = gaussianRandom();
+          }
+
+          const t0 = performance.now();
+
+          // Just do forward passes without noise calculation
+          for (let t = 0; t < this.T; t++) {
+            await this.predictNoise(x, t);
+            await this.device.queue.onSubmittedWorkDone();
+          }
+
+          const t1 = performance.now();
+          return (t1 - t0) / 1000;
+        }
+
+        async runBenchmark() {
+          this.isBenchmarking = true;
+          this.statusDiv.textContent = "Running benchmark 100 times...";
+          let total = 0;
+          const runs = 100;
+
+          for (let i = 0; i < runs; i++) {
+            const elapsed = await this.runSingleBenchmark();
+            total += elapsed;
+            this.statusDiv.textContent = `Benchmark progress: ${
+              i + 1
+            }/${runs} runs | Avg time: ${(total / (i + 1)).toFixed(2)}s`;
+          }
+
+          const avg = total / runs;
+          this.statusDiv.textContent = `Benchmark complete. Average time over ${runs} runs: ${avg.toFixed(
+            2
+          )}s`;
+          this.isBenchmarking = false;
         }
       }
 
