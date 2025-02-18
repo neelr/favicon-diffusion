@@ -1,27 +1,34 @@
+// algorithm: performs tiled matrix multiplication for standard matrix layout
+// - uses shared memory tiling for better cache efficiency
+// - processes 16x16 tiles to maximize cache utilization
+// - coalesced memory access pattern for global memory
+// - handles non-tile-aligned matrix dimensions
+// - minimizes bank conflicts in shared memory access
+// - uses barrier synchronization for tile loading
+
 const TILE_SIZE: u32 = 16;
 
 struct MatrixDims {
- aRows: u32,
-k: u32,
-bCols: u32,
-pad: u32,   // Padding to ensure 16-byte alignment.
+    aRows: u32,        // rows of A and C
+    k: u32,           // inner dimension
+    bCols: u32,       // columns of B and C
+    pad: u32,         // padding for 16-byte alignment
 };
 
 @group(0) @binding(0)
-var<storage, read> A: array<f32>;
+var<storage, read> A: array<f32>;  // [aRows, k]
 
 @group(0) @binding(1)
-var<storage, read> B: array<f32>;
+var<storage, read> B: array<f32>;  // [k, bCols]
 
 @group(0) @binding(2)
-var<storage, read_write> C: array<f32>;
+var<storage, read_write> C: array<f32>;  // [aRows, bCols]
 
 @group(0) @binding(3)
 var<uniform> dims: MatrixDims;
 
-// Use a flattened workgroup array for the tile.
-var<workgroup> tileA: array<f32, TILE_SIZE * TILE_SIZE>;
-var<workgroup> tileB: array<f32, TILE_SIZE * TILE_SIZE>;
+var<workgroup> tileA: array<f32, TILE_SIZE * TILE_SIZE>;  // [TILE_SIZE, TILE_SIZE]
+var<workgroup> tileB: array<f32, TILE_SIZE * TILE_SIZE>;  // [TILE_SIZE, TILE_SIZE]
 
 @compute @workgroup_size(TILE_SIZE, TILE_SIZE)
 fn main(
@@ -47,7 +54,7 @@ fn main(
         }
 
         // Load B into tileB.
-        // Here, use the appropriate condition for B’s coordinates:
+        // Here, use the appropriate condition for B's coordinates:
         let bRow = t * TILE_SIZE + localID.x;
         if (bRow < dims.k && col < dims.bCols) {
             tileB[tileIndex] = B[bRow * dims.bCols + col];

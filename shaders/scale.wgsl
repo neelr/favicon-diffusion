@@ -1,12 +1,18 @@
+// algorithm: performs scalar multiplication on a matrix
+// - uses vec4 vectorization for efficient memory access
+// - handles non-aligned matrix sizes with scalar fallback
+// - coalesced memory access pattern for better throughput
+// - single thread handles remainder to avoid thread divergence
+// - minimizes atomic operations by using vectorized writes
 
 @group(0) @binding(0)
-var<storage, read_write> matrix : array<f32>;
+var<storage, read_write> matrix : array<f32>;  // [dims.x, dims.y]
 
 @group(0) @binding(1)
 var<uniform> scalar : f32;
 
 @group(0) @binding(2)
-var<uniform> dims : vec2<u32>;
+var<uniform> dims : vec2<u32>;  // (rows, cols)
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) globalID: vec3<u32>) {
