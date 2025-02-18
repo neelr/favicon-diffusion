@@ -31,7 +31,7 @@
         height: 10vh;
         font-family: monospace;
         color: white;
-        /* The fallback background is the “remaining” part – we update it via JS */
+        /* The fallback background is the "remaining" part – we update it via JS */
         background: rgba(92, 146, 255, 0.5);
         display: flex;
         align-items: center;
@@ -209,6 +209,11 @@
               ctx,
               false
             );
+            // After drawing, expose the dataURL to the parent window if it exists
+            if (window.parent && window.parent !== window) {
+              const dataURL = canvas.toDataURL("image/png");
+              window.parent.postMessage({ type: "canvasUpdate", dataURL }, "*");
+            }
           });
         }
 
