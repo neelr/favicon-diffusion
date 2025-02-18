@@ -253,40 +253,40 @@ class DiT(nn.Module):
         matrices = {}
 
         # Patch embedding matrices
-        matrices['patch_embed.weight'] = self.patch_embed.weight.data.T
+        matrices['patch_embed.weight'] = self.patch_embed.weight.data
 
         # Time MLP matrices
-        matrices['time_mlp.1.weight'] = self.time_mlp[1].weight.data.T
-        matrices['time_mlp.3.weight'] = self.time_mlp[3].weight.data.T
+        matrices['time_mlp.1.weight'] = self.time_mlp[1].weight.data
+        matrices['time_mlp.3.weight'] = self.time_mlp[3].weight.data
 
         # Transformer block matrices
         for i, block in enumerate(self.blocks):
             prefix = f'block_{i}.'
 
             # Attention matrices
-            matrices[prefix + 'attn.to_q.weight'] = block.attn.to_q.weight.data.T
-            matrices[prefix + 'attn.to_k.weight'] = block.attn.to_k.weight.data.T
-            matrices[prefix + 'attn.to_v.weight'] = block.attn.to_v.weight.data.T
-            matrices[prefix + 'attn.to_out.weight'] = block.attn.to_out.weight.data.T
+            matrices[prefix + 'attn.to_q.weight'] = block.attn.to_q.weight.data
+            matrices[prefix + 'attn.to_k.weight'] = block.attn.to_k.weight.data
+            matrices[prefix + 'attn.to_v.weight'] = block.attn.to_v.weight.data
+            matrices[prefix + 'attn.to_out.weight'] = block.attn.to_out.weight.data
 
             # Feed-forward matrices
-            matrices[prefix + 'ff.net.0.weight'] = block.ff.net[0].weight.data.T
-            matrices[prefix + 'ff.net.2.weight'] = block.ff.net[2].weight.data.T
+            matrices[prefix + 'ff.net.0.weight'] = block.ff.net[0].weight.data
+            matrices[prefix + 'ff.net.2.weight'] = block.ff.net[2].weight.data
 
             # AdaLN matrices
             matrices[prefix +
-                     'norm1.scale.weight'] = block.norm1.scale_proj.weight.data.T
+                     'norm1.scale.weight'] = block.norm1.scale_proj.weight.data
             matrices[prefix +
-                     'norm1.shift.weight'] = block.norm1.shift_proj.weight.data.T
+                     'norm1.shift.weight'] = block.norm1.shift_proj.weight.data
             matrices[prefix +
-                     'norm2.scale.weight'] = block.norm2.scale_proj.weight.data.T
+                     'norm2.scale.weight'] = block.norm2.scale_proj.weight.data
             matrices[prefix +
-                     'norm2.shift.weight'] = block.norm2.shift_proj.weight.data.T
+                     'norm2.shift.weight'] = block.norm2.shift_proj.weight.data
 
         # Final layers matrices
-        matrices['final_norm.scale.weight'] = self.final_norm.scale_proj.weight.data.T
-        matrices['final_norm.shift.weight'] = self.final_norm.shift_proj.weight.data.T
-        matrices['to_pixels.weight'] = self.to_pixels.weight.data.T
+        matrices['final_norm.scale.weight'] = self.final_norm.scale_proj.weight.data
+        matrices['final_norm.shift.weight'] = self.final_norm.shift_proj.weight.data
+        matrices['to_pixels.weight'] = self.to_pixels.weight.data
 
         return matrices
 
