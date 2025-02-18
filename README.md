@@ -1,12 +1,14 @@
-# Web DiT: High-Performance Diffusion Transformers in the Browser 🚀
+# favicon diffusor: a high-performance diffusion transformer in the browser 🚀
 
-![Web DiT in Action](https://doggo.ninja/shZ3Uh.gif)
+<img src="https://doggo.ninja/shZ3Uh.gif" alt="Web DiT in Action" width="500px">
 
-Web DiT is a cutting-edge implementation of Diffusion Transformers (DiT) that runs directly in your web browser using WebGPU. Our implementation achieves remarkable performance improvements over existing solutions, making real-time diffusion models accessible to anyone with a modern web browser.
+![favicon](https://github.com/user-attachments/assets/0def1766-0467-4f07-a978-51782417906e)
+
+A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them! Building on my last "from scratch DiT" this starts at the kernel level and rewrites diffusion transformers using WSGL! A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ with a ~11M parameter model
 
 ## ⚡ Performance
 
-Our implementation, dubbed "Favicon Diffusor", demonstrates exceptional performance:
+Of course.... here are the numbers! Currently faster than tf.js and (of course) baseline JS—transformers.js doesn't support custom layer building, so I didn't include it.
 
 | Implementation | Time (s) | vs Baseline | vs TensorFlow.js |
 |----------------|-----------|-------------|------------------|
@@ -14,7 +16,7 @@ Our implementation, dubbed "Favicon Diffusor", demonstrates exceptional performa
 | TensorFlow.js | 1.57 | 79.3% faster | baseline |
 | Baseline JS | 7.57 | baseline | 382% slower |
 
-[![Performance Comparison](https://doggo.ninja/clucbV.png)](https://doggo.ninja/clucbV.png)
+<img src="https://doggo.ninja/clucbV.png" alt="Performance Comparison" width="400px">
 
 ## 🌟 Features
 
@@ -36,14 +38,6 @@ The implementation includes several key optimizations:
 - Optimized attention mechanisms
 - Streamlined data pipelining
 
-### Model Architecture
-- Input Size: 64x64
-- Patch Size: 4x4
-- Hidden Dimension: 768
-- Transformer Depth: 12
-- Attention Head Dimension: 192
-- MLP Expansion Factor: 4
-
 ## 🚀 Getting Started
 
 ### Prerequisites
@@ -54,7 +48,7 @@ The implementation includes several key optimizations:
 1. Clone the repository:
 ```bash
 git clone https://github.com/neelr/favicon-diffusor.git
-cd web_dit
+cd favicon-diffusor
 ```
 
 1. Run a development server:
