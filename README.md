@@ -1,4 +1,4 @@
-# favicon diffusor: a high-performance browser diffusion transformer 🚀
+# favicon diffusor: a high-performance browser diffusion transformer
 
 <img src="https://doggo.ninja/shZ3Uh.gif" alt="Web DiT in Action" width="500px">
 
