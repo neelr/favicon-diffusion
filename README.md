@@ -64,6 +64,7 @@ Open to contributions! `dit.js` and `shaders/shaders.js` are the only files you 
 - [x] add transpose matmul optimization
 - [x] implement flashattention from scratch
 - [ ] implement multi-head attention
+- [ ] try implementing a "next scale prediction" VAR https://arxiv.org/abs/2404.02905
 - [ ] port over a full stable diffusion checkpoint
 - [ ] add text latents + possibly conditioning?
 - [ ] create an easy porting script
