@@ -6,7 +6,7 @@
 
 Ever wanted fast diffusion on device? Struggled with compatibility and libraries? Worry no more—favicon diffusor is here! Using WebGPU, its supported on almost any device (that can run chrome) and can diffuse hippos anywhere (even as a favicon)!
 
-A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them. Building on my [last "from scratch DiT"](github.com/neelr/scratche-dit) this starts at the kernel level and rewrites diffusion transformers using WSGL. A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ in ~0.7s with a ~11M parameter model
+A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them. Building on my [last "from scratch DiT"](github.com/neelr/scratche-dit) this starts at the kernel level and rewrites diffusion transformers using WGSL. A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ in ~0.7s with a ~11M parameter model
 
 https://notebook.neelr.dev/stories/in-browser-favicon-diffusion-scratch-dit-pt-2
 
@@ -56,6 +56,17 @@ The project structure includes:
 - Various utility and testing files
 
 Open to contributions! `dit.js` and `shaders/shaders.js` are the only files you really need for the demo and the rest are just for training and testing. Those two combined are only ~2k lines of code.
+
+## TODO
+- [x] implement patchify and unpatchify as shaders
+- [x] modularize all shaders into separate files
+- [x] create benchmarks against relevant other categories
+- [x] add transpose matmul optimization
+- [x] implement flashattention from scratch
+- [ ] implement multi-head attention
+- [ ] port over a full stable diffusion checkpoint
+- [ ] add text latents + possibly conditioning?
+- [ ] create an easy porting script
 
 ## resources
 
