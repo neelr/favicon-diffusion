@@ -8,7 +8,9 @@ Ever wanted fast diffusion on device? Struggled with compatibility and libraries
 
 A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them. Building on my [last "from scratch DiT"](github.com/neelr/scratche-dit) this starts at the kernel level and rewrites diffusion transformers using WSGL. A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ in ~0.7s with a ~11M parameter model
 
-## ⚡ Performance
+https://notebook.neelr.dev/stories/in-browser-favicon-diffusion-scratch-dit-pt-2
+
+## perf
 
 Of course.... here are the approximate numbers on an M1 Pro! Currently faster than tf.js and (of course) baseline JS—transformers.js doesn't support custom layer building, so I didn't include it.
 
@@ -20,19 +22,7 @@ Of course.... here are the approximate numbers on an M1 Pro! Currently faster th
 
 <img src="https://doggo.ninja/clucbV.png" alt="Performance Comparison" width="400px">
 
-## 🌟 Features
-
-- **WebGPU Acceleration**: Leverages modern WebGPU shaders for maximum performance
-- **Optimized Architecture**: Implements the DiT (Diffusion Transformer) architecture with performance optimizations
-- **Browser-Native**: Runs entirely in the browser - no server-side processing required
-- **Custom WGSL Shaders**: Includes optimized shaders for:
-  - Flash Attention
-  - Layer Normalization
-  - Patchification
-  - Batched Matrix Multiplication
-- **Real-time Processing**: Achieves sub-second inference times for image generation
-
-## 🛠️ Technical Details
+## tech
 
 The implementation includes several key optimizations:
 - Custom WGSL shaders for core operations
@@ -40,25 +30,22 @@ The implementation includes several key optimizations:
 - Optimized attention mechanisms
 - Streamlined data pipelining
 
-## 🚀 Getting Started
+## getting started
+- you need a browser with WebGPU support (Chrome Canary or other modern browsers with WebGPU flags enabled)
 
-### Prerequisites
-- A browser with WebGPU support (Chrome Canary or other modern browsers with WebGPU flags enabled)
-- Node.js and npm (for development)
-
-### Installation
-1. Clone the repository:
+### installation
+1. clone the repository:
 ```bash
 git clone https://github.com/neelr/favicon-diffusor.git
 cd favicon-diffusor
 ```
 
-1. Run a development server:
+2. Run a development server:
 ```bash
 npx http-server
 ```
 
-## 🔧 Development
+## development
 
 The project structure includes:
 - `dit.py` - PyTorch reference implementation
@@ -68,7 +55,9 @@ The project structure includes:
 - `compile.sh` - Compile the shaders into a single file
 - Various utility and testing files
 
-## 📚 Resources
+Open to contributions! `dit.js` and `shaders/shaders.js` are the only files you really need for the demo and the rest are just for training and testing. Those two combined are only ~2k lines of code.
+
+## resources
 
 - [WebGPU](https://webgpu.org/)
 - [Stable Diffusion for Distillation!](https://github.com/CompVis/stable-diffusion)
