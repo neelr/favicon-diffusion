@@ -1,14 +1,16 @@
-# favicon diffusor: a high-performance diffusion transformer in the browser 🚀
+# favicon diffusor: a high-performance browser diffusion transformer 🚀
 
 <img src="https://doggo.ninja/shZ3Uh.gif" alt="Web DiT in Action" width="500px">
 
 ![favicon](https://github.com/user-attachments/assets/0def1766-0467-4f07-a978-51782417906e)
 
-A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them! Building on my last "from scratch DiT" this starts at the kernel level and rewrites diffusion transformers using WSGL! A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ with a ~11M parameter model
+Ever wanted fast diffusion on device? Struggled with compatibility and libraries? Worry no more—favicon diffusor is here! Using WebGPU, its supported on almost any device (that can run chrome) and can diffuse hippos anywhere (even as a favicon)!
+
+A quick weekend project where I hacked on a bunch of WebGPU kernels from scratch and tried to optimize them. Building on my [last "from scratch DiT"](github.com/neelr/scratche-dit) this starts at the kernel level and rewrites diffusion transformers using WSGL. A subsecond 32-step diffusion inference time allows for an awesome demo of actually _diffusing the favicon of a website realtime_ in ~0.7s with a ~11M parameter model
 
 ## ⚡ Performance
 
-Of course.... here are the numbers! Currently faster than tf.js and (of course) baseline JS—transformers.js doesn't support custom layer building, so I didn't include it.
+Of course.... here are the approximate numbers on an M1 Pro! Currently faster than tf.js and (of course) baseline JS—transformers.js doesn't support custom layer building, so I didn't include it.
 
 | Implementation | Time (s) | vs Baseline | vs TensorFlow.js |
 |----------------|-----------|-------------|------------------|
