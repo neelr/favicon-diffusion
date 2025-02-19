@@ -59,10 +59,65 @@
       </button>
     </div>
 
+    <footer
+      style="
+        text-align: center;
+        margin-top: 2rem;
+        color: #666;
+        font-size: 0.9rem;
+      "
+    >
+      <p>
+        made with <3 by
+        <a
+          href="https://neelr.dev"
+          style="color: #4caf50; text-decoration: none"
+          >@neelr</a
+        >
+        |
+        <a
+          href="https://github.com/neelr/favicon-diffusion"
+          style="color: #4caf50; text-decoration: none"
+          >source code</a
+        >
+        |
+        <a
+          href="https://notebook.neelr.dev/stories/in-browser-favicon-diffusion-scratch-dit-pt-2"
+          style="color: #4caf50; text-decoration: none"
+          >check out the writeup =></a
+        >
+      </p>
+    </footer>
+
     <script defer>
       // ----- Utility Functions -----
       function safeSqrt(x, eps = 1e-8) {
         return Math.sqrt(Math.max(x, eps));
+      }
+
+      // Debug function to log GPU buffers
+      const DEBUG_LOG_BUFFERS = true;
+      async function logBuffer(device, buffer, numElements, label = "") {
+        const byteSize = numElements * 4;
+        const stagingBuffer = device.createBuffer({
+          size: byteSize,
+          usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+        });
+        const commandEncoder = device.createCommandEncoder();
+        commandEncoder.copyBufferToBuffer(
+          buffer,
+          0,
+          stagingBuffer,
+          0,
+          byteSize
+        );
+        device.queue.submit([commandEncoder.finish()]);
+        await device.queue.onSubmittedWorkDone();
+        await stagingBuffer.mapAsync(GPUMapMode.READ);
+        const arrayBuffer = stagingBuffer.getMappedRange();
+        const data = new Float32Array(arrayBuffer.slice(0));
+        console.log(label, data);
+        stagingBuffer.unmap();
       }
 
       function gaussianRandom() {
