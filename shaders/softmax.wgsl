@@ -2,7 +2,8 @@
 // - uses parallel reduction for finding max value for numerical stability
 // - employs tree reduction pattern in shared memory for efficient reduction
 // - processes multiple elements per thread in strided pattern
-// - unrolled tree reduction for threads < 32 to avoid warp-level sync
+// - tree reduction with explicit barriers for WebGPU memory model compliance
+// - note: unlike CUDA, WebGPU does not guarantee subgroup synchronization
 // - fuses exp and normalization to minimize memory accesses
 
 @group(0) @binding(0) var<storage, read> scores: array<f32>;  // [rows, cols]
@@ -39,10 +40,25 @@ fn main(
     workgroupBarrier();
     if (local_id.x < 32u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 32u]);
+    }
+    workgroupBarrier();
+    if (local_id.x < 16u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 16u]);
+    }
+    workgroupBarrier();
+    if (local_id.x < 8u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 8u]);
+    }
+    workgroupBarrier();
+    if (local_id.x < 4u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 4u]);
+    }
+    workgroupBarrier();
+    if (local_id.x < 2u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 2u]);
+    }
+    workgroupBarrier();
+    if (local_id.x < 1u) {
         shared_max[local_id.x] = max(shared_max[local_id.x], shared_max[local_id.x + 1u]);
     }
     workgroupBarrier();
@@ -68,10 +84,25 @@ fn main(
     workgroupBarrier();
     if (local_id.x < 32u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 32u];
+    }
+    workgroupBarrier();
+    if (local_id.x < 16u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 16u];
+    }
+    workgroupBarrier();
+    if (local_id.x < 8u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 8u];
+    }
+    workgroupBarrier();
+    if (local_id.x < 4u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 4u];
+    }
+    workgroupBarrier();
+    if (local_id.x < 2u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 2u];
+    }
+    workgroupBarrier();
+    if (local_id.x < 1u) {
         shared_sum[local_id.x] += shared_sum[local_id.x + 1u];
     }
     workgroupBarrier();
